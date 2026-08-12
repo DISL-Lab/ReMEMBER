@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "gaps": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "evidence": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "source_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "validation": {
+                  "const": 1
+                },
+                "vote_count": {
+                  "type": "integer"
+                },
+                "votes": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "GLM": {
+                      "type": "integer"
+                    },
+                    "Qwen": {
+                      "type": "integer"
+                    },
+                    "gemma": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "GLM",
+                    "Qwen",
+                    "gemma"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "source_id",
+                "status",
+                "validation",
+                "vote_count",
+                "votes"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "gap_idx": {
+            "type": "integer"
+          },
+          "gap_type": {
+            "type": "string"
+          },
+          "target_sentence_numbers": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "evidence",
+          "gap_idx",
+          "gap_type",
+          "target_sentence_numbers"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "range": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0"
+    },
+    "source": {
+      "enum": [
+        "evermembench",
+        "locomo",
+        "realtalk"
+      ]
+    },
+    "window_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "gaps",
+    "range",
+    "schema_version",
+    "source",
+    "window_id"
+  ],
+  "title": "ReMEMber text-free annotations",
+  "type": "object"
+}

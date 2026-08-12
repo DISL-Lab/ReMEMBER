@@ -1,0 +1,18 @@
+{
+  "artifacts": {
+    "annotations": {
+      "path": "annotations/remember_900_annotations.jsonl",
+      "sha256": "a921ae399bd646d469a6824db4d5421358aee387dd1124ff2f1ee2f8c0a8ab3a"
+    },
+    "split": {
+      "path": "splits/main_900.txt",
+      "sha256": "0eef55c9307dbb8155f664a860503760eb9314ba2594383996a48728bdb961ee"
+    }
+  },
+  "counts": {
+    "evidence": 4135,
+    "gaps": 1498,
+    "windows": 900
+  },
+  "schema_version": "1.0"
+}
