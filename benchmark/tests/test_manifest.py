@@ -78,3 +78,33 @@ def test_manifest_rejects_duplicate_input_paths(tmp_path):
     input_path, output_path = _files(tmp_path)
     with pytest.raises(ValueError, match="duplicate input"):
         write_stage_manifest(output_path, stage="x", prompt="p", inputs=[input_path, input_path], config={})
+
+
+def test_resume_strictly_checks_expected_stage_and_output_identity(tmp_path):
+    input_path, output_path = _files(tmp_path)
+    old = write_stage_manifest(output_path, stage="salient", prompt="v1", inputs=[input_path], config={})
+    with pytest.raises(ResumeMismatch, match="stage identity"):
+        verify_resume(old.path, prompt="v1", inputs=[input_path], config={}, expected_stage="validation", output_path=output_path)
+    with pytest.raises(ResumeMismatch, match="output identity"):
+        verify_resume(old.path, prompt="v1", inputs=[input_path], config={}, expected_stage="salient", output_path=tmp_path / "other.jsonl")
+    assert verify_resume(
+        old.path, prompt="v1", inputs=[input_path], config={}, expected_stage="salient", output_path=output_path
+    ) == old
+
+
+def test_resume_rejects_leftover_manifest_temp(tmp_path):
+    input_path, output_path = _files(tmp_path)
+    old = write_stage_manifest(output_path, stage="salient", prompt="v1", inputs=[input_path], config={})
+    (tmp_path / f".{old.path.name}.interrupted.tmp").write_text("partial", encoding="utf-8")
+    with pytest.raises(ResumeMismatch, match="temporary manifest"):
+        verify_resume(old.path, prompt="v1", inputs=[input_path], config={})
+
+
+def test_resume_rejects_manifest_output_name_traversal(tmp_path):
+    input_path, output_path = _files(tmp_path)
+    old = write_stage_manifest(output_path, stage="salient", prompt="v1", inputs=[input_path], config={})
+    payload = json.loads(old.path.read_text(encoding="utf-8"))
+    payload["output_name"] = "../victim.jsonl"
+    old.path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ResumeMismatch, match="output identity|output_name"):
+        verify_resume(old.path, prompt="v1", inputs=[input_path], config={})

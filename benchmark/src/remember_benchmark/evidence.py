@@ -49,27 +49,53 @@ def run_evidence(
             raise ValueError(f"{window_id}: history must be a list")
         sentence_index = _history_index(history)
         allowed_turns: set[int] = set()
-        for chunk in filtered[window_id].get("relevant_chunks", []):
-            if not isinstance(chunk, dict) or not isinstance(chunk.get("start_turn"), int) or not isinstance(chunk.get("end_turn"), int):
-                raise ValueError(f"{window_id}: invalid relevant chunk boundary")
-            allowed_turns.update(range(chunk["start_turn"], chunk["end_turn"] + 1))
+        relevant_chunks = filtered[window_id].get("relevant_chunks")
+        if not isinstance(relevant_chunks, list):
+            raise ValueError(f"{window_id}: relevant_chunks must be a list")
+        for chunk in relevant_chunks:
+            if not isinstance(chunk, dict):
+                raise ValueError(f"{window_id}: invalid relevant chunk bound")
+            start = chunk.get("start_turn")
+            end = chunk.get("end_turn")
+            if (
+                type(start) is not int
+                or type(end) is not int
+                or start < 0
+                or end < start
+                or end >= len(history)
+            ):
+                raise ValueError(f"{window_id}: invalid relevant chunk bound")
+            allowed_turns.update(range(start, end + 1))
         allowed_index = {
             source_id: sentence for source_id, sentence in sentence_index.items()
             if int(source_id[1:source_id.index("-")]) in allowed_turns
         }
+        raw_gaps = salient[window_id].get("gaps")
+        if not isinstance(raw_gaps, list):
+            raise ValueError(f"{window_id}: gaps must be a list")
         gaps: list[dict[str, Any]] = []
-        for gap in salient[window_id].get("gaps", []):
+        seen_gap_indices: set[int] = set()
+        for gap in raw_gaps:
             if not isinstance(gap, dict):
                 raise ValueError(f"{window_id}: salient gap must be an object")
+            gap_idx = gap.get("gap_idx")
+            if type(gap_idx) is not int or gap_idx < 0:
+                raise ValueError(f"{window_id}: gap_idx must be a non-negative integer")
+            if gap_idx in seen_gap_indices:
+                raise ValueError(f"{window_id}: duplicate gap_idx {gap_idx}")
+            seen_gap_indices.add(gap_idx)
+            if gap.get("gap_type") not in {"N", "C", "A", "L"}:
+                raise ValueError(f"{window_id}: invalid gap_type")
             copied = dict(gap)
             copied["evidence"] = []
-            if gap.get("gap_type") != "N":
+            if gap.get("gap_type") != "N" and allowed_index:
                 rendered = prompt.format(
                     history=json.dumps(allowed_index, ensure_ascii=False, sort_keys=True),
                     gap=json.dumps(gap, ensure_ascii=False, sort_keys=True),
                     window=json.dumps(window.get("turns", []), ensure_ascii=False),
                 )
                 evidence = _parse_response(provider.complete(rendered), "evidence", window_id, "evidence")
+                seen_source_ids: set[str] = set()
                 for item_index, item in enumerate(evidence):
                     location = f"evidence {window_id} item {item_index}"
                     if not isinstance(item, dict):
@@ -77,6 +103,9 @@ def run_evidence(
                     source_id = item.get("source_id")
                     if not isinstance(source_id, str) or not re.fullmatch(r"T\d+-S\d+", source_id) or source_id not in allowed_index:
                         raise StageOutputError(f"{location}: invalid or filtered-out source_id")
+                    if source_id in seen_source_ids:
+                        raise StageOutputError(f"{location}: duplicate provider source_id judgment: {source_id}")
+                    seen_source_ids.add(source_id)
                     if item.get("sentence") != allowed_index[source_id]:
                         raise StageOutputError(f"{location}: sentence does not match source_id coordinate")
                     if item.get("status") not in {"resolve", "not_resolve"} or not isinstance(item.get("reasoning"), str):
@@ -87,6 +116,11 @@ def run_evidence(
                         "reasoning": item["reasoning"],
                         "status": item["status"],
                     })
+                if seen_source_ids != set(allowed_index):
+                    missing = sorted(set(allowed_index) - seen_source_ids)
+                    raise StageOutputError(
+                        f"evidence {window_id}: coordinate coverage mismatch; missing judgments for {missing}"
+                    )
             gaps.append(copied)
         output.append({
             "schema_version": "1.0", "window_id": window_id,

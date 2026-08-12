@@ -154,17 +154,28 @@ def _read_manifest(path: Path) -> StageManifest:
         if not isinstance(inputs, list):
             raise ValueError("inputs must be a list")
         parsed_inputs = tuple((item["path"], item["sha256"]) for item in inputs)
+        output_name = payload["output_name"]
+        if (
+            not isinstance(output_name, str)
+            or not output_name
+            or Path(output_name).name != output_name
+            or output_name in {".", ".."}
+        ):
+            raise ValueError("output_name must be a local file name")
+        expected_manifest = manifest_path_for(path.parent / output_name)
+        if path.resolve() != expected_manifest.resolve():
+            raise ValueError("manifest path does not match output identity")
         return StageManifest(
             stage=payload["stage"],
             prompt_sha256=payload["prompt_sha256"],
             configuration_sha256=payload["configuration_sha256"],
             inputs=parsed_inputs,
-            output_name=payload["output_name"],
+            output_name=output_name,
             output_sha256=payload["output_sha256"],
             path=path,
         )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ResumeMismatch(f"invalid or missing stage manifest: {path}") from exc
+        raise ResumeMismatch(f"invalid or missing stage manifest {path}: {exc}") from exc
 
 
 def verify_resume(
@@ -173,12 +184,31 @@ def verify_resume(
     prompt: str,
     inputs: Sequence[Path],
     config: Mapping[str, Any],
+    expected_stage: str | None = None,
+    output_path: Path | None = None,
 ) -> StageManifest:
-    recorded = _read_manifest(manifest.path if isinstance(manifest, StageManifest) else Path(manifest))
-    output_path = recorded.path.parent / recorded.output_name
-    leftovers = sorted(output_path.parent.glob(f".{output_path.name}.*.tmp"))
-    if leftovers:
-        raise ResumeMismatch(f"incomplete temporary output exists: {leftovers[0]}")
+    manifest_path = manifest.path if isinstance(manifest, StageManifest) else Path(manifest)
+    recorded = _read_manifest(manifest_path)
+    recorded_output_path = recorded.path.parent / recorded.output_name
+    manifest_leftovers = sorted(recorded.path.parent.glob(f".{recorded.path.name}.*.tmp"))
+    if manifest_leftovers:
+        raise ResumeMismatch(f"incomplete temporary manifest exists: {manifest_leftovers[0]}")
+    output_leftovers = [
+        path for path in sorted(recorded_output_path.parent.glob(f".{recorded_output_path.name}.*"))
+        if path.is_file() and not path.name.startswith(f".{recorded.path.name}.")
+    ]
+    if output_leftovers:
+        raise ResumeMismatch(f"incomplete temporary output exists: {output_leftovers[0]}")
+    if expected_stage is not None and recorded.stage != expected_stage:
+        raise ResumeMismatch(
+            f"stage identity mismatch: expected {expected_stage!r}, recorded {recorded.stage!r}"
+        )
+    if output_path is not None:
+        expected_output = Path(output_path)
+        if recorded_output_path.resolve() != expected_output.resolve():
+            raise ResumeMismatch(
+                f"output identity mismatch: expected {expected_output}, recorded {recorded_output_path}"
+            )
     if sha256_text(prompt) != recorded.prompt_sha256:
         raise ResumeMismatch("prompt hash mismatch")
     try:
@@ -189,8 +219,8 @@ def verify_resume(
         raise ResumeMismatch("input hash mismatch")
     if configuration_hash(config) != recorded.configuration_sha256:
         raise ResumeMismatch("configuration hash mismatch")
-    if not output_path.is_file():
-        raise ResumeMismatch(f"stage output is missing: {output_path}")
-    if sha256_file(output_path) != recorded.output_sha256:
+    if not recorded_output_path.is_file():
+        raise ResumeMismatch(f"stage output is missing: {recorded_output_path}")
+    if sha256_file(recorded_output_path) != recorded.output_sha256:
         raise ResumeMismatch("output hash mismatch")
     return recorded

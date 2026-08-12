@@ -7,7 +7,7 @@ name = "remember-benchmark"
 version = "0.1.0"
 description = "Deterministic ReMEMber benchmark annotation pipeline"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6"]
+dependencies = ["PyYAML>=6", "tiktoken>=0.7"]
 
 [project.optional-dependencies]
 openai = ["openai>=1"]

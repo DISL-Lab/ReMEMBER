@@ -42,13 +42,13 @@ def ensemble_salient_votes(
     priority = {"C": 0, "A": 1, "L": 2, "N": 3}
     for window_id in windows:
         sentence_votes: dict[int, list[str]] = {}
-        reference_groups: list[tuple[int, ...]] = []
-        for model_position, model in enumerate(indexed):
+        groups: set[tuple[int, ...]] = set()
+        for model in indexed:
             voted_by_model: set[int] = set()
             gaps = indexed[model][window_id].get("gaps", [])
             if not isinstance(gaps, list):
                 raise ValueError(f"{window_id}: gaps must be a list")
-            for group_position, gap in enumerate(gaps):
+            for gap in gaps:
                 if not isinstance(gap, dict):
                     raise ValueError(f"{window_id}: salient gaps must be objects")
                 coordinates = gap.get("target_sentence_numbers")
@@ -67,13 +67,12 @@ def ensemble_salient_votes(
                 voted_by_model.update(coordinates)
                 for coordinate in coordinates:
                     sentence_votes.setdefault(coordinate, []).append(gap_type)
-                if model_position == 0:
-                    reference_groups.append(tuple(coordinates))
+                groups.add(tuple(coordinates))
         surviving = {
             coordinate for coordinate, types in sentence_votes.items() if len(types) >= required
         }
         accepted: list[dict[str, Any]] = []
-        for coordinates in reference_groups:
+        for coordinates in sorted(groups, key=lambda item: (min(item), item)):
             if not set(coordinates) <= surviving:
                 continue
             types = sentence_votes[coordinates[0]]
@@ -123,6 +122,7 @@ def ensemble_votes(
         gap_metadata: dict[int, dict[str, Any]] = {}
         candidate_votes: dict[tuple[int, str], dict[str, int]] = {}
         for model in indexed:
+            seen_candidates: set[tuple[int, str]] = set()
             for gap in indexed[model][window_id].get("gaps", []):
                 gap_idx = gap.get("gap_idx")
                 if not isinstance(gap_idx, int):
@@ -138,6 +138,12 @@ def ensemble_votes(
                 for item in gap.get("validated", []):
                     if not isinstance(item, dict) or not isinstance(item.get("source_id"), str):
                         raise ValueError(f"{window_id}: invalid validated evidence item")
+                    candidate_key = (gap_idx, item["source_id"])
+                    if candidate_key in seen_candidates:
+                        raise ValueError(
+                            f"{window_id}: duplicate candidate judgment for {item['source_id']} in model {model}"
+                        )
+                    seen_candidates.add(candidate_key)
                     candidate_votes.setdefault((gap_idx, item["source_id"]), {})[model] = int(item.get("validation") == 1)
         gaps: list[dict[str, Any]] = []
         for gap_idx in sorted(gap_metadata):
@@ -145,13 +151,14 @@ def ensemble_votes(
             for (candidate_gap, source_id), votes in sorted(candidate_votes.items()):
                 if candidate_gap != gap_idx:
                     continue
-                vote_count = sum(votes.values())
+                complete_votes = {model: votes.get(model, 0) for model in indexed}
+                vote_count = sum(complete_votes.values())
                 if vote_count >= threshold:
                     evidence.append({
                         "source_id": source_id,
                         "status": "resolve",
                         "vote_count": vote_count,
-                        "votes": dict(sorted(votes.items())),
+                        "votes": dict(sorted(complete_votes.items())),
                         "validation": 1,
                     })
             gaps.append({**gap_metadata[gap_idx], "evidence": evidence})

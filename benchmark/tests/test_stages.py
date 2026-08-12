@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from remember_benchmark.chunk_filter import build_history_chunks, run_chunk_filter
+from remember_benchmark.chunk_filter import _next_chunk_start, build_history_chunks, run_chunk_filter
 from remember_benchmark.ensemble import ensemble_chunk_votes, ensemble_salient_votes, ensemble_votes
 from remember_benchmark.evidence import run_evidence
 from remember_benchmark.providers import ScriptedProvider
@@ -62,6 +62,23 @@ def test_history_chunks_use_128_32_defaults_and_keep_stable_boundaries():
     assert all(item["max_tokens"] == 128 and item["overlap_tokens"] == 32 for item in chunks)
 
 
+def test_chunk_overlap_next_start_always_advances_and_preserves_new_turn():
+    # Regression for counts [90, 30, 100]: after emitting [0,1], turn 1 fits
+    # overlap but the next chunk must still advance to and include new turn 2.
+    assert _next_chunk_start(start=0, end=2, counts=[90, 30, 100], overlap_tokens=32) == 1
+
+    class MappedCounter:
+        def count(self, text):
+            return {"turn-90": 90, "turn-30": 30, "turn-100": 100}[text.split(": ", 1)[1]]
+
+    history = [
+        {"time": f"t{i}", "speaker": "A", "dialogue": dialogue}
+        for i, dialogue in enumerate(("turn-90", "turn-30", "turn-100"))
+    ]
+    chunks = build_history_chunks(history, MappedCounter(), max_tokens=128, overlap_tokens=32)
+    assert [(chunk["start_turn"], chunk["end_turn"]) for chunk in chunks] == [(0, 1), (1, 2)]
+
+
 def test_chunk_filter_requires_one_binary_label_per_chunk():
     provider = ScriptedProvider([_response({"labels": [1, 0]})])
     row = {**WINDOW, "history": [
@@ -109,6 +126,66 @@ def test_evidence_emits_sentence_coordinates_and_validation_marks_returned_ids()
     assert [(item["source_id"], item["validation"]) for item in validated[0]["gaps"][0]["validated"]] == [
         ("T0-S1", 1)
     ]
+
+
+@pytest.mark.parametrize("chunk", [
+    {"start_turn": -1, "end_turn": 0},
+    {"start_turn": 1, "end_turn": 0},
+    {"start_turn": 0, "end_turn": 3},
+])
+def test_evidence_rejects_invalid_relevant_chunk_bounds(chunk):
+    salient = [{"window_id": "E_U0000", "gaps": []}]
+    filtered = [{"window_id": "E_U0000", "relevant_chunks": [chunk]}]
+    with pytest.raises(ValueError, match="chunk bound"):
+        run_evidence([WINDOW], salient, filtered, ScriptedProvider([]), "{history} {gap}")
+
+
+def test_evidence_rejects_duplicate_provider_coordinate_judgments():
+    salient = [{"window_id": "E_U0000", "gaps": [{
+        "gap_idx": 0, "target_sentence_numbers": [0], "target_sentence": ["That plan works."],
+        "gap_reason": "missing", "gap_type": "A",
+    }]}]
+    filtered = [{"window_id": "E_U0000", "relevant_chunks": [{"start_turn": 0, "end_turn": 0}]}]
+    duplicate = {"source_id": "T0-S1", "sentence": "red blue", "reasoning": "x", "status": "resolve"}
+    provider = ScriptedProvider([_response({"evidence": [duplicate, duplicate]})])
+    with pytest.raises(ValueError, match="duplicate.*source_id"):
+        run_evidence([WINDOW], salient, filtered, provider, "{history} {gap}")
+
+
+def test_evidence_requires_exactly_one_judgment_for_every_allowed_coordinate():
+    window = {**WINDOW, "history": [
+        {"time": "t0", "speaker": "A", "dialogue": "first sentence. second sentence."},
+    ]}
+    salient = [{"window_id": "E_U0000", "gaps": [{
+        "gap_idx": 0, "target_sentence_numbers": [0], "target_sentence": ["That plan works."],
+        "gap_reason": "missing", "gap_type": "A",
+    }]}]
+    filtered = [{"window_id": "E_U0000", "relevant_chunks": [{"start_turn": 0, "end_turn": 0}]}]
+    provider = ScriptedProvider([_response({"evidence": [{
+        "source_id": "T0-S1", "sentence": "first sentence.", "reasoning": "x", "status": "resolve",
+    }]})])
+    with pytest.raises(ValueError, match="coordinate coverage"):
+        run_evidence([window], salient, filtered, provider, "{history} {gap}")
+
+
+def test_evidence_skips_provider_when_no_coordinates_are_allowed():
+    salient = [{"window_id": "E_U0000", "gaps": [{
+        "gap_idx": 0, "target_sentence_numbers": [0], "target_sentence": ["That plan works."],
+        "gap_reason": "missing", "gap_type": "A",
+    }]}]
+    filtered = [{"window_id": "E_U0000", "relevant_chunks": []}]
+    provider = ScriptedProvider([])
+    result = run_evidence([WINDOW], salient, filtered, provider, "{history} {gap}")
+    assert provider.calls == []
+    assert result[0]["gaps"][0]["evidence"] == []
+
+
+@pytest.mark.parametrize("gaps", [None, {}, [{"gap_idx": -1, "gap_type": "A"}], [{"gap_idx": "0", "gap_type": "A"}]])
+def test_evidence_rejects_invalid_gap_list_or_index(gaps):
+    salient = [{"window_id": "E_U0000", "gaps": gaps}]
+    filtered = [{"window_id": "E_U0000", "relevant_chunks": []}]
+    with pytest.raises(ValueError, match="gaps|gap_idx"):
+        run_evidence([WINDOW], salient, filtered, ScriptedProvider([]), "{history} {gap}")
 
 
 @pytest.mark.parametrize("stage,call", [
@@ -159,7 +236,7 @@ def test_ensembles_apply_paper_thresholds_and_final_votes_are_text_free():
     assert "private text" not in serialized and "private reason" not in serialized
 
 
-def test_salient_ensemble_votes_by_sentence_before_retaining_reference_groups():
+def test_salient_ensemble_votes_by_sentence_then_unions_surviving_groups():
     rows = {
         "gemma": [{"window_id": "E_U0000", "gaps": [
             {"target_sentence_numbers": [1, 2], "gap_type": "A"},
@@ -174,11 +251,9 @@ def test_salient_ensemble_votes_by_sentence_before_retaining_reference_groups():
         ]}],
     }
 
-    assert ensemble_salient_votes(rows) == [{
-        "schema_version": "1.0",
-        "window_id": "E_U0000",
-        "gaps": [{"gap_idx": 0, "target_sentence_numbers": [1, 2], "gap_type": "A"}],
-    }]
+    assert [gap["target_sentence_numbers"] for gap in ensemble_salient_votes(rows)[0]["gaps"]] == [
+        [1], [1, 2], [2]
+    ]
 
 
 def test_salient_ensemble_rejects_duplicate_sentence_vote_within_one_model():
@@ -192,3 +267,36 @@ def test_salient_ensemble_rejects_duplicate_sentence_vote_within_one_model():
     }
     with pytest.raises(ValueError, match="duplicate sentence vote"):
         ensemble_salient_votes(rows)
+
+
+def test_salient_ensemble_unions_and_deduplicates_surviving_groups_from_all_models():
+    rows = {
+        "gemma": [{"window_id": "E_U0000", "gaps": [
+            {"target_sentence_numbers": [1], "gap_type": "A"},
+            {"target_sentence_numbers": [2], "gap_type": "A"},
+        ]}],
+        "GLM": [{"window_id": "E_U0000", "gaps": [
+            {"target_sentence_numbers": [1, 2], "gap_type": "C"},
+        ]}],
+        "Qwen": [{"window_id": "E_U0000", "gaps": [
+            {"target_sentence_numbers": [1, 2], "gap_type": "A"},
+        ]}],
+    }
+    assert [gap["target_sentence_numbers"] for gap in ensemble_salient_votes(rows)[0]["gaps"]] == [
+        [1], [1, 2], [2]
+    ]
+
+
+def test_validation_ensemble_zero_fills_absent_models_and_rejects_duplicate_judgments():
+    def row(items):
+        return [{
+            "window_id": "E_U0000", "source": "evermembench", "range": "8k~16k",
+            "gaps": [{"gap_idx": 0, "target_sentence_numbers": [0], "gap_type": "A", "validated": items}],
+        }]
+
+    positive = {"source_id": "T0-S1", "validation": 1}
+    result = ensemble_votes({"gemma": row([positive]), "GLM": row([positive]), "Qwen": row([])}, threshold=2)
+    assert result[0]["gaps"][0]["evidence"][0]["votes"] == {"GLM": 1, "Qwen": 0, "gemma": 1}
+
+    with pytest.raises(ValueError, match="duplicate.*candidate"):
+        ensemble_votes({"gemma": row([positive, positive]), "GLM": row([]), "Qwen": row([])}, threshold=1)

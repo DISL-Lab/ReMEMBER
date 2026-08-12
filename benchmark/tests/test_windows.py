@@ -57,3 +57,30 @@ def test_windows_keep_other_instead_of_dropping_them():
     config = WindowConfig(start_tokens=2, size_tokens=2, stride_tokens=2)
     windows = build_windows([_dialogue()], WordCounter(), configs={"evermembench": config})
     assert [row["range"] for row in windows] == ["other", "other"]
+
+
+def test_window_ids_follow_numeric_topic_group_order_across_sources():
+    config = WindowConfig(start_tokens=0, size_tokens=1, stride_tokens=1)
+
+    def one_turn(source, dialogue_id, text):
+        return NormalizedDialogue(
+            "1.0", dialogue_id, source,
+            (NormalizedTurn("2024-01-01 00:00:00", "A", text),),
+        )
+
+    dialogues = [
+        one_turn("locomo", "L_topic-11_group-1", "locomo eleven"),
+        one_turn("evermembench", "E_topic-10_group-2", "ever ten-two"),
+        one_turn("evermembench", "E_topic-2_group-11", "ever two-eleven"),
+        one_turn("locomo", "L_topic-2_group-1", "locomo two"),
+    ]
+    configs = {name: config for name in ("evermembench", "locomo")}
+
+    windows = build_windows(dialogues, WordCounter(), configs=configs)
+
+    assert [(row["window_id"], row["dialogue_id"], row["turns"][0]["dialogue"]) for row in windows] == [
+        ("E_U0000", "E_topic-2_group-11", "ever two-eleven"),
+        ("E_U0001", "E_topic-10_group-2", "ever ten-two"),
+        ("L_U0000", "L_topic-2_group-1", "locomo two"),
+        ("L_U0001", "L_topic-11_group-1", "locomo eleven"),
+    ]

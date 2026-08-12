@@ -32,6 +32,25 @@ def _format_turn(turn: dict[str, Any]) -> str:
     return f"[{turn.get('time', '')}] {turn.get('speaker', '')}: {turn.get('dialogue', '')}"
 
 
+def _next_chunk_start(
+    *, start: int, end: int, counts: Sequence[int], overlap_tokens: int
+) -> int:
+    """Return the trailing whole-turn overlap start for an emitted [start,end).
+
+    A caller that has not yet appended the new turn uses this retained suffix
+    exactly once; the canonical builder then appends the new turn regardless
+    of whether overlap plus that turn exceeds ``max_tokens``.
+    """
+    overlap_start = end
+    overlap_total = 0
+    for index in range(end - 1, start - 1, -1):
+        if overlap_total + counts[index] > overlap_tokens:
+            break
+        overlap_start = index
+        overlap_total += counts[index]
+    return overlap_start
+
+
 def build_history_chunks(
     history: Sequence[dict[str, Any]],
     counter: TokenCounter,
@@ -43,14 +62,31 @@ def build_history_chunks(
     counts = [counter.count(_format_turn(turn)) for turn in history]
     if any(not isinstance(value, int) or value <= 0 for value in counts):
         raise ValueError("token counter must return positive integers")
+    raw_chunks: list[tuple[int, int, int]] = []
+    current_start = 0
+    current_indices: list[int] = []
+    current_total = 0
+    for index, count in enumerate(counts):
+        if current_indices and current_total + count > max_tokens:
+            end = current_indices[-1] + 1
+            raw_chunks.append((current_start, end, current_total))
+            overlap_start = _next_chunk_start(
+                start=current_start, end=end, counts=counts, overlap_tokens=overlap_tokens
+            )
+            current_indices = list(range(overlap_start, end))
+            current_start = overlap_start if current_indices else index
+            current_total = sum(counts[item] for item in current_indices)
+        # Match the paper builder: after overflow, retain fitting overlap and
+        # append the new turn once, even if their combined size exceeds budget.
+        current_indices.append(index)
+        current_total += count
+        if len(current_indices) == 1:
+            current_start = index
+    if current_indices:
+        raw_chunks.append((current_start, current_indices[-1] + 1, current_total))
+
     chunks: list[dict[str, Any]] = []
-    start = 0
-    while start < len(history):
-        end = start
-        total = 0
-        while end < len(history) and (total + counts[end] <= max_tokens or end == start):
-            total += counts[end]
-            end += 1
+    for start, end, total in raw_chunks:
         chunks.append({
             "chunk_id": len(chunks),
             "start_turn": start,
@@ -60,16 +96,6 @@ def build_history_chunks(
             "overlap_tokens": overlap_tokens,
             "turns": [dict(turn) for turn in history[start:end]],
         })
-        if end >= len(history):
-            break
-        overlap_start = end
-        overlap_total = 0
-        for index in range(end - 1, start - 1, -1):
-            if overlap_total + counts[index] > overlap_tokens:
-                break
-            overlap_start = index
-            overlap_total += counts[index]
-        start = overlap_start if overlap_start < end else end
     return chunks
 
 
