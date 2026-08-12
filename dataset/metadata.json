@@ -4,6 +4,10 @@
       "path": "annotations/remember_900_annotations.jsonl",
       "sha256": "a921ae399bd646d469a6824db4d5421358aee387dd1124ff2f1ee2f8c0a8ab3a"
     },
+    "schema": {
+      "path": "schema.json",
+      "sha256": "d8d2283ff6e245f0b2f18a37ef6d2cb722ca54726642816beeb8cc1dfc93cdf6"
+    },
     "split": {
       "path": "splits/main_900.txt",
       "sha256": "0eef55c9307dbb8155f664a860503760eb9314ba2594383996a48728bdb961ee"

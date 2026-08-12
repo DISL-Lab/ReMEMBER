@@ -16,7 +16,7 @@ adjudication status, vote count, three model votes, and `validation=1`.
 key between split and annotation lines; `source_id` is a coordinate within the
 upstream corpus and is not a public-content lookup service. `schema.json`
 defines the allowlisted record structure. `metadata.json` records the exact
-denominators and SHA-256 hashes of the distributed annotation and split files.
+denominators and SHA-256 hashes of the distributed annotation, schema, and split files.
 
 The paper denominator is exactly 900 windows, 1,498 non-empty target gaps,
 and 4,135 evidence links with `validation=1`. These are release counts, not

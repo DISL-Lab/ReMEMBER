@@ -1,0 +1,8 @@
+STAGE: validation
+Validate candidate evidence for sufficiency, explicit support, distinctness, and genuine memory
+necessity. Reject candidates that require inference or merely repeat the current window.
+Return one JSON object with schema_version "1.0" and valid_source_ids containing only supplied IDs.
+
+CANDIDATES:{candidates}
+GAP:{gap}
+WINDOW:{window}

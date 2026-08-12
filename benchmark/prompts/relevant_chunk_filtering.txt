@@ -1,0 +1,7 @@
+STAGE: chunk_filter
+Judge every history chunk independently. Label 1 only when it may contain context directly useful
+for resolving an ambiguity or missing dependency in the current window; otherwise label 0.
+Return one JSON object with schema_version "1.0" and a labels array in the exact input order.
+
+CHUNKS:{chunks}
+WINDOW:{window}

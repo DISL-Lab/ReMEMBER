@@ -1,0 +1,31 @@
+models:
+  gemma: google/gemma-4-31B-it
+  GLM: zai-org/GLM-4.7-Flash
+  Qwen: Qwen/Qwen3.6-27B
+thresholds:
+  salient: 3
+  chunk_filter: 3
+  validation: 2
+windowing:
+  start_tokens: 7000
+  size_tokens: 1024
+  strides:
+    evermembench: 1024
+    locomo: 256
+    realtalk: 256
+chunking:
+  tokens: 128
+  overlap_tokens: 32
+  chunks_per_group: 16
+temperature: 0
+sources: {}
+prompts:
+  salient: ../prompts/salient.txt
+  chunk_filter: ../prompts/relevant_chunk_filtering.txt
+  evidence: ../prompts/relevant_chunk.txt
+  validation: ../prompts/relevant_chunk_validation.txt
+split: ../../dataset/splits/main_900.txt
+expected_counts:
+  windows: 900
+  gaps: 1498
+  evidence: 4135

@@ -1,0 +1,10 @@
+STAGE: evidence
+For every supplied history sentence coordinate, decide whether it explicitly resolves the gap.
+Require direct textual evidence: do not infer, speculate, use world knowledge, or accept topical
+similarity. Return one JSON object with schema_version "1.0" and evidence. Each item must contain
+source_id, the exact sentence, concise reasoning, and status resolve or not_resolve. Judge every
+provided coordinate exactly once.
+
+HISTORY:{history}
+GAP:{gap}
+WINDOW:{window}

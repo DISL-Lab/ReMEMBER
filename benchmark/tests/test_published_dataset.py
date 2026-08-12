@@ -30,6 +30,10 @@ def test_published_metadata_hashes_distributed_annotation_and_split_files():
             "path": "annotations/remember_900_annotations.jsonl",
             "sha256": sha256(DATASET / "annotations/remember_900_annotations.jsonl"),
         },
+        "schema": {
+            "path": "schema.json",
+            "sha256": sha256(DATASET / "schema.json"),
+        },
         "split": {
             "path": "splits/main_900.txt",
             "sha256": sha256(DATASET / "splits/main_900.txt"),

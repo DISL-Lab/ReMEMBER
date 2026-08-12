@@ -299,6 +299,10 @@ def _write_export(
                     "path": "annotations/remember_900_annotations.jsonl",
                     "sha256": _sha256(output_path),
                 },
+                "schema": {
+                    "path": "schema.json",
+                    "sha256": _sha256(schema_path),
+                },
                 "split": {
                     "path": "splits/main_900.txt",
                     "sha256": _sha256(split_path),

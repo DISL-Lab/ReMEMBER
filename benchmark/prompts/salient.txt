@@ -1,0 +1,10 @@
+STAGE: salient
+Identify only current-window utterances that need earlier context to be understood faithfully.
+Select unresolved names, entities, events, actions, or contextual references; do not select merely
+because an utterance is short. Prefer the smallest exact sentence coordinates and classify each gap
+as N (no gap), C (coreference), A (antecedent/context), or L (long-term factual dependency).
+Return one JSON object with schema_version "1.0" and candidates. Each candidate has
+sentence_numbers, exact sentences, reason, and gap_type. Do not add prose outside JSON.
+
+WINDOW:
+{window}
