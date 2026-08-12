@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import json
 import os
-import re
 from typing import Protocol, Sequence
 
 
@@ -127,6 +127,8 @@ class VLLMGenerator:
     def _load(self, model: str):
         if self._llm is not None and self._model == model:
             return self._llm, self._tokenizer
+        if self._llm is not None:
+            self._release()
         from vllm import LLM
 
         kwargs = {"model": model, "gpu_memory_utilization": self.gpu_memory_utilization}
@@ -136,6 +138,20 @@ class VLLMGenerator:
         self._tokenizer = self._llm.get_tokenizer()
         self._model = model
         return self._llm, self._tokenizer
+
+    def _release(self) -> None:
+        llm = self._llm
+        self._llm = None
+        self._tokenizer = None
+        self._model = None
+        if llm is None:
+            return
+        engine = getattr(llm, "llm_engine", None)
+        shutdown = getattr(engine, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        del engine, llm
+        gc.collect()
 
     def generate(
         self,
@@ -208,12 +224,3 @@ class Cl100kTokenCounter:
 
             self._encoding = tiktoken.get_encoding("cl100k_base")
         return len(self._encoding.encode(text or ""))
-
-
-class DeterministicTokenCounter:
-    """Dependency-free token approximation used only by the fake smoke adapter."""
-
-    _tokens = re.compile(r"[A-Za-z0-9_]+|[^\w\s]", re.UNICODE)
-
-    def count(self, text: str) -> int:
-        return len(self._tokens.findall(text or ""))

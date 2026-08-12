@@ -162,13 +162,36 @@ def hybrid_retrieve(
     embedder: Embedder,
     top_k: int = 8,
     rrf_k: int = 60,
-    dense_query_prefix: str = "",
 ) -> dict[int, list[RetrievedChunk]]:
     """Run lexical and dense retrieval for each gap, then fuse their candidates."""
+    return _hybrid_retrieve(
+        gaps,
+        chunks,
+        embedder,
+        query_texts=[_query_text(gap) for gap in gaps],
+        query_embedder=embedder,
+        top_k=top_k,
+        rrf_k=rrf_k,
+    )
+
+
+def _hybrid_retrieve(
+    gaps: Sequence[PredictedGap],
+    chunks: Sequence[Chunk],
+    embedder: Embedder,
+    *,
+    query_texts: Sequence[str],
+    query_embedder: Embedder,
+    top_k: int,
+    rrf_k: int,
+) -> dict[int, list[RetrievedChunk]]:
+    """Internal retrieval path with explicitly bound canonical query controls."""
     if top_k <= 0:
         raise ValueError("top_k must be positive")
     if rrf_k <= 0:
         raise ValueError("rrf_k must be positive")
+    if len(query_texts) != len(gaps):
+        raise ValueError("query_texts must contain one query per gap")
     if not chunks:
         return {gap.index: [] for gap in gaps}
 
@@ -177,10 +200,9 @@ def hybrid_retrieve(
         raise ValueError("embedder must return one vector per chunk")
     candidate_limit = min(len(chunks), 4 * top_k)
     results: dict[int, list[RetrievedChunk]] = {}
-    for gap in gaps:
-        query = _query_text(gap)
+    for gap, query in zip(gaps, query_texts):
         sparse_order = _rank(_bm25_scores(query, chunks), chunks, candidate_limit)
-        query_vectors = list(embedder.encode([dense_query_prefix + gap.evidence_need_query]))
+        query_vectors = list(query_embedder.encode([query]))
         if len(query_vectors) != 1:
             raise ValueError("embedder must return one vector per query")
         dense_scores = [_cosine(query_vectors[0], vector) for vector in document_vectors]

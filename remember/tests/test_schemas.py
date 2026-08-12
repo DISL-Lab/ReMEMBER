@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import stat
 
 import pytest
 
@@ -63,10 +65,26 @@ def test_atomic_jsonl_write_replaces_the_complete_file(tmp_path):
     assert not list(path.parent.glob(".windows.jsonl.*.tmp"))
 
 
+def test_atomic_jsonl_write_fsyncs_parent_directory(monkeypatch, tmp_path):
+    fsynced_modes = []
+    real_fsync = os.fsync
+
+    def record_fsync(fd):
+        fsynced_modes.append(os.fstat(fd).st_mode)
+        return real_fsync(fd)
+
+    monkeypatch.setattr("remember.io.os.fsync", record_fsync)
+    atomic_write_jsonl(tmp_path / "out.jsonl", [{"window_id": "one"}])
+
+    assert any(stat.S_ISDIR(mode) for mode in fsynced_modes)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
         ({"gap_model": ""}, "gap_model"),
+        ({"token_encoding": ""}, "token_encoding must be a non-empty string"),
+        ({"dense_query_prefix": ""}, "dense_query_prefix must be a non-empty string"),
         ({"max_gaps": 0}, "max_gaps"),
         ({"max_gaps": 9}, "max_gaps"),
         ({"chunk_tokens": 0}, "chunk_tokens"),

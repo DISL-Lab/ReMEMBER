@@ -53,8 +53,8 @@ python -m remember run \
 ```
 
 The fake provider is deterministic, CPU-only, and never accesses the network
-or downloads a model. It uses a dependency-free approximate counter strictly
-for smoke testing; paper providers use exact `cl100k_base` accounting.
+or downloads a model. Like every provider, it uses exact `cl100k_base`
+accounting.
 
 ## Paper providers
 

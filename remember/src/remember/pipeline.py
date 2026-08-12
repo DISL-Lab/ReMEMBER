@@ -5,15 +5,15 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import Any, Sequence
 
 from .config import RememberConfig
-from .facet_turn import MemoryResult, facet_turn_pack
-from .gap_detection import parse_predicted_gaps
+from .facet_turn import MemoryResult, _facet_turn_pack
+from .gap_detection import _keywords, parse_predicted_gaps
 from .inference import Cl100kTokenCounter, TextGenerator
-from .retrieval import build_token_chunks, hybrid_retrieve
+from .retrieval import _hybrid_retrieve, build_token_chunks
 from .schemas import Embedder, PredictedGap, RetrievedChunk, TokenCounter, Window
-from .summarization import render_window, summarize
+from .summarization import _summarize, render_window
 
 
 METHOD = "pred_gap_hybrid_facet_turn_pack1024"
@@ -66,19 +66,61 @@ def _read_prompt(name: str) -> str:
     return (PROMPT_ROOT / name).read_text(encoding="utf-8")
 
 
+class _PrefixedEmbedder:
+    def __init__(self, embedder: Embedder, prefix: str) -> None:
+        self.embedder = embedder
+        self.prefix = prefix
+
+    def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        return self.embedder.encode([self.prefix + text for text in texts])
+
+
+def _faithful_query(window: Window, gap: PredictedGap) -> str:
+    window_keywords = " ".join(_keywords(render_window(window), max_terms=35))
+    quote_keywords = " ".join(_keywords(gap.quote, max_terms=20))
+    model_keywords = " ".join(gap.keywords[:24])
+    return (
+        "Find earlier dialogue that directly supports a faithful memory for the current window. "
+        f"Current utterance: {gap.quote}. "
+        f"Missing context: {gap.gap_reason}. "
+        f"Needed evidence: {gap.evidence_need_query}. "
+        f"Anchor terms: {model_keywords} {quote_keywords}. "
+        f"Topic anchors: {window_keywords}."
+    )
+
+
 def run_window(
     window: Window,
     config: RememberConfig,
     generator: TextGenerator,
     embedder: Embedder,
-    *,
-    counter: TokenCounter | None = None,
-    memory_only: bool = False,
-    gap_prompt: str | None = None,
-    summary_prompt_with_memory: str | None = None,
-    summary_prompt_without_memory: str | None = None,
 ) -> RunResult:
-    counter = counter or Cl100kTokenCounter()
+    """Execute the canonical method through the exact public brief interface."""
+    return _run_window(
+        window,
+        config,
+        generator,
+        embedder,
+        counter=Cl100kTokenCounter(),
+        memory_only=False,
+        gap_prompt=_read_prompt("gap_detection.txt"),
+        summary_prompt_with_memory=_read_prompt("summary_with_memory.txt"),
+        summary_prompt_without_memory=_read_prompt("summary_window_only.txt"),
+    )
+
+
+def _run_window(
+    window: Window,
+    config: RememberConfig,
+    generator: TextGenerator,
+    embedder: Embedder,
+    *,
+    counter: TokenCounter,
+    memory_only: bool,
+    gap_prompt: str,
+    summary_prompt_with_memory: str,
+    summary_prompt_without_memory: str,
+) -> RunResult:
     gap_prompt = gap_prompt if gap_prompt is not None else _read_prompt("gap_detection.txt")
     summary_prompt_with_memory = (
         summary_prompt_with_memory
@@ -112,31 +154,33 @@ def run_window(
         max_tokens=config.chunk_tokens,
         overlap_tokens=config.overlap_tokens,
     )
-    retrieved_lists = hybrid_retrieve(
+    query_embedder = _PrefixedEmbedder(embedder, config.dense_query_prefix)
+    retrieved_lists = _hybrid_retrieve(
         gaps,
         chunks,
         embedder,
+        query_texts=[_faithful_query(window, gap) for gap in gaps],
+        query_embedder=query_embedder,
         top_k=config.top_k,
         rrf_k=config.rrf_k,
-        dense_query_prefix=config.dense_query_prefix,
     )
     retrieval = {index: tuple(items) for index, items in retrieved_lists.items()}
     timings["retrieval"] = perf_counter() - started
 
     started = perf_counter()
-    memory = facet_turn_pack(
+    memory = _facet_turn_pack(
         window,
         gaps,
         retrieval,
         embedder,
+        query_embedder,
         counter,
-        budget_tokens=config.memory_budget_tokens,
-        dense_query_prefix=config.dense_query_prefix,
+        config.memory_budget_tokens,
     )
     timings["packing"] = perf_counter() - started
 
     started = perf_counter()
-    summary = "" if memory_only else summarize(
+    summary = "" if memory_only else _summarize(
         window,
         memory,
         generator,

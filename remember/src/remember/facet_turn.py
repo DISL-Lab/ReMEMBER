@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Mapping, Sequence
 
+from .config import DENSE_QUERY_PREFIX
 from .schemas import Embedder, PredictedGap, RetrievedChunk, TokenCounter, Turn, Window
 
 
@@ -66,6 +67,15 @@ class _Event:
     score: float
     chunk_rank: int
     facet_rank: int
+
+
+class _PrefixedEmbedder:
+    def __init__(self, embedder: Embedder, prefix: str) -> None:
+        self.embedder = embedder
+        self.prefix = prefix
+
+    def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        return self.embedder.encode([self.prefix + text for text in texts])
 
 
 def _normalize_space(text: str) -> str:
@@ -175,7 +185,27 @@ def facet_turn_pack(
     embedder: Embedder,
     counter: TokenCounter,
     budget_tokens: int = 1024,
-    dense_query_prefix: str = "",
+) -> MemoryResult:
+    """Pack with the canonical paper prefix and 1,024-token default."""
+    return _facet_turn_pack(
+        window,
+        gaps,
+        retrieved,
+        embedder,
+        _PrefixedEmbedder(embedder, DENSE_QUERY_PREFIX),
+        counter,
+        budget_tokens,
+    )
+
+
+def _facet_turn_pack(
+    window: Window,
+    gaps: Sequence[PredictedGap],
+    retrieved: Mapping[int, Sequence[RetrievedChunk]],
+    embedder: Embedder,
+    facet_embedder: Embedder,
+    counter: TokenCounter,
+    budget_tokens: int,
 ) -> MemoryResult:
     """Pack retrieved history using the canonical gap-facet round robin.
 
@@ -190,7 +220,7 @@ def facet_turn_pack(
     candidates, ranks_by_gap = _candidates(window, gaps, retrieved)
     facets = _facets(gaps)
     candidate_vectors = list(embedder.encode([item.unit_text for item in candidates]))
-    facet_vectors = list(embedder.encode([dense_query_prefix + item.text for item in facets]))
+    facet_vectors = list(facet_embedder.encode([item.text for item in facets]))
     if len(candidate_vectors) != len(candidates):
         raise ValueError("embedder must return one vector per candidate")
     if len(facet_vectors) != len(facets):

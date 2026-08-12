@@ -38,10 +38,30 @@ def summarize(
     generator: TextGenerator,
     prompt_with_memory: str,
     prompt_without_memory: str,
+) -> str:
+    """Summarize through the exact public interface from the release brief."""
+    return _summarize(
+        window,
+        memory,
+        generator,
+        prompt_with_memory,
+        prompt_without_memory,
+        model=None,
+        temperature=0.7,
+        max_tokens=768,
+    )
+
+
+def _summarize(
+    window: Window,
+    memory: MemoryResult,
+    generator: TextGenerator,
+    prompt_with_memory: str,
+    prompt_without_memory: str,
     *,
-    model: str | None = None,
-    temperature: float = 0.7,
-    max_tokens: int = 768,
+    model: str | None,
+    temperature: float,
+    max_tokens: int,
 ) -> str:
     template = prompt_with_memory if memory.text.strip() else prompt_without_memory
     values = {"window": render_window(window), "memory": memory.text}

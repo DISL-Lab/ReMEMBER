@@ -15,6 +15,16 @@ class InputError(ValueError):
     """An input JSONL line is malformed or does not meet the window schema."""
 
 
+def _fsync_parent(path: Path) -> None:
+    """Persist a completed rename in the containing directory."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    directory_fd = os.open(Path(path).parent, flags)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def _error(path: Path, line_number: int, message: str) -> InputError:
     return InputError(f"{path}:{line_number}: {message}")
 
@@ -83,6 +93,7 @@ def atomic_write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, destination)
+        _fsync_parent(destination)
     except Exception:
         temp_path.unlink(missing_ok=True)
         raise

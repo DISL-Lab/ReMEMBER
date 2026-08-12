@@ -1,11 +1,21 @@
 import json
+import os
+import stat
+import sys
+import types
 from dataclasses import replace
 
 import pytest
 
+import remember.cli as cli
 from remember.cli import ResumeError, main, run_file
 from remember.config import RememberConfig
-from remember.inference import DeterministicFakeGenerator, DeterministicHashEmbedder
+from remember.inference import (
+    Cl100kTokenCounter,
+    DeterministicFakeGenerator,
+    DeterministicHashEmbedder,
+    VLLMGenerator,
+)
 
 
 class WordCounter:
@@ -134,13 +144,18 @@ def test_cli_fake_provider_runs_without_network_and_never_echoes_input_dialogue(
         "rrf_k": 60,
     }))
 
-    exit_code = main([
+    original_count = Cl100kTokenCounter.count
+    Cl100kTokenCounter.count = WordCounter.count
+    try:
+        exit_code = main([
         "run",
         "--config", str(config),
         "--input", str(source),
         "--output", str(output),
         "--provider", "fake",
-    ])
+        ])
+    finally:
+        Cl100kTokenCounter.count = original_count
 
     assert exit_code == 0
     [row] = _read_rows(output)
@@ -165,6 +180,99 @@ def test_paper_config_uses_canonical_v15_prompt_and_dense_prefix():
     assert "Output up to {max_gaps} gaps." in prompt
     assert config.dense_query_prefix == (
         "Instruct: Given a current-window utterance with missing dialogue context, "
-        "retrieve earlier dialogue that resolves the missing referent, artifact, "
-        "decision, rationale, or prior state.\nQuery: "
+        "retrieve earlier dialogue that directly supports a faithful memory item.\nQuery: "
     )
+
+
+def test_fake_provider_uses_exact_cl100k_counter(monkeypatch, tmp_path):
+    source = tmp_path / "input.jsonl"
+    output = tmp_path / "out.jsonl"
+    config = tmp_path / "paper.yaml"
+    _write_windows(source, ids=("w1",))
+    config.write_text("{}\n")
+    sentinel = object()
+    captured = {}
+    monkeypatch.setattr(cli, "Cl100kTokenCounter", lambda: sentinel)
+    monkeypatch.setattr(cli, "run_file", lambda *args, **kwargs: captured.update(kwargs) or [])
+
+    assert main([
+        "run", "--config", str(config), "--input", str(source),
+        "--output", str(output), "--provider", "fake",
+    ]) == 0
+
+    assert captured["counter"] is sentinel
+
+
+def test_resume_rejects_provider_change_before_api_key_access(monkeypatch, tmp_path):
+    source = tmp_path / "input.jsonl"
+    output = tmp_path / "out.jsonl"
+    config = tmp_path / "paper.yaml"
+    _write_windows(source, ids=("w1",))
+    config.write_text("{}\n")
+    monkeypatch.setattr(Cl100kTokenCounter, "count", WordCounter.count)
+
+    main([
+        "run", "--config", str(config), "--input", str(source),
+        "--output", str(output), "--provider", "fake",
+    ])
+    monkeypatch.delenv("MISSING_REVIEW_KEY", raising=False)
+
+    with pytest.raises(ResumeError, match="configuration hash"):
+        main([
+            "run", "--config", str(config), "--input", str(source),
+            "--output", str(output), "--provider", "openai", "--resume",
+            "--base-url", "https://fixture.invalid/v1",
+            "--api-key-env", "MISSING_REVIEW_KEY", "--dense-device", "cpu",
+        ])
+
+
+def test_cli_atomic_manifest_write_fsyncs_parent_directory(monkeypatch, tmp_path):
+    fsynced_modes = []
+    real_fsync = os.fsync
+
+    def record_fsync(fd):
+        fsynced_modes.append(os.fstat(fd).st_mode)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(cli.os, "fsync", record_fsync)
+    cli._atomic_write_json(tmp_path / "manifest.json", {"ok": True})
+
+    assert any(stat.S_ISDIR(mode) for mode in fsynced_modes)
+
+
+def test_vllm_model_switch_tears_down_old_engine_before_loading_new(monkeypatch):
+    events = []
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[0]["content"]
+
+    class FakeEngine:
+        def __init__(self, model):
+            self.model = model
+
+        def shutdown(self):
+            events.append(f"shutdown:{self.model}")
+
+    class FakeLLM:
+        def __init__(self, *, model, **kwargs):
+            del kwargs
+            events.append(f"load:{model}")
+            self.model = model
+            self.llm_engine = FakeEngine(model)
+
+        def get_tokenizer(self):
+            return FakeTokenizer()
+
+        def generate(self, prompts, params, use_tqdm=False):
+            del prompts, params, use_tqdm
+            return [types.SimpleNamespace(outputs=[types.SimpleNamespace(text="ok")])]
+
+    fake_vllm = types.SimpleNamespace(LLM=FakeLLM, SamplingParams=lambda **kwargs: kwargs)
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    generator = VLLMGenerator()
+
+    generator.generate("first", model="model-a")
+    generator.generate("second", model="model-b")
+
+    assert events == ["load:model-a", "shutdown:model-a", "load:model-b"]

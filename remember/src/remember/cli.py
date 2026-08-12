@@ -16,13 +16,12 @@ from .inference import (
     Cl100kTokenCounter,
     DeterministicFakeGenerator,
     DeterministicHashEmbedder,
-    DeterministicTokenCounter,
     OpenAICompatibleGenerator,
     SentenceTransformerEmbedder,
     VLLMGenerator,
 )
-from .io import atomic_write_jsonl, load_windows
-from .pipeline import run_window
+from .io import _fsync_parent, atomic_write_jsonl, load_windows
+from .pipeline import _read_prompt, _run_window
 from .schemas import Embedder, TokenCounter
 
 
@@ -60,6 +59,7 @@ def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
+        _fsync_parent(path)
     except Exception:
         temp_path.unlink(missing_ok=True)
         raise
@@ -95,12 +95,21 @@ def run_file(
     resume: bool = False,
     overwrite: bool = False,
     memory_only: bool = False,
+    runtime_config: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if resume and overwrite:
         raise ValueError("--resume and --overwrite are mutually exclusive")
     input_path, output_path = Path(input_path), Path(output_path)
     manifest_path = _manifest_path(output_path)
-    run_config = {**asdict(config), "memory_only": memory_only}
+    run_config = {
+        **asdict(config),
+        "memory_only": memory_only,
+        "runtime": dict(runtime_config or {
+            "generator_adapter": type(generator).__name__,
+            "embedder_adapter": type(embedder).__name__,
+            "counter_adapter": type(counter).__name__ if counter is not None else "Cl100kTokenCounter",
+        }),
+    }
     input_hash = _sha256(input_path)
     config_hash = _canonical_hash(run_config)
 
@@ -130,13 +139,16 @@ def run_file(
             raise ValueError(f"input contains duplicate window_id: {window.window_id}")
         ordered_ids.append(window.window_id)
         if window.window_id not in rows_by_id:
-            rows_by_id[window.window_id] = run_window(
+            rows_by_id[window.window_id] = _run_window(
                 window,
                 config,
                 generator,
                 embedder,
-                counter=counter,
+                counter=counter or Cl100kTokenCounter(),
                 memory_only=memory_only,
+                gap_prompt=_read_prompt("gap_detection.txt"),
+                summary_prompt_with_memory=_read_prompt("summary_with_memory.txt"),
+                summary_prompt_without_memory=_read_prompt("summary_window_only.txt"),
             ).to_dict()
     rows = [rows_by_id[window_id] for window_id in ordered_ids]
     atomic_write_jsonl(output_path, rows)
@@ -192,7 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.provider == "fake":
         generator = DeterministicFakeGenerator()
         embedder = DeterministicHashEmbedder()
-        counter = DeterministicTokenCounter()
+        counter = Cl100kTokenCounter()
     else:
         generator = (
             OpenAICompatibleGenerator(base_url=args.base_url, api_key_env=args.api_key_env)
@@ -205,6 +217,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             gpu_devices=args.gpu_devices,
         )
         counter = Cl100kTokenCounter()
+    runtime_config = {
+        "provider": args.provider,
+        "base_url": args.base_url,
+        "api_key_env": args.api_key_env,
+        "dense_device": args.dense_device,
+        "gpu_devices": args.gpu_devices,
+        "generator_adapter": type(generator).__name__,
+        "embedder_adapter": type(embedder).__name__,
+        "counter_adapter": type(counter).__name__,
+    }
     run_file(
         args.input,
         args.output,
@@ -215,5 +237,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         resume=args.resume,
         overwrite=args.overwrite,
         memory_only=args.memory_only,
+        runtime_config=runtime_config,
     )
     return 0

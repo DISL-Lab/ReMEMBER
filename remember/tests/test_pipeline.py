@@ -1,8 +1,10 @@
 import json
+import inspect
 
 from remember.config import RememberConfig
-from remember.facet_turn import MemoryResult
-from remember.pipeline import METHOD, run_window
+from remember.facet_turn import MemoryResult, facet_turn_pack
+from remember.pipeline import METHOD, _read_prompt, _run_window, run_window
+from remember.retrieval import hybrid_retrieve
 from remember.schemas import Turn, Window
 from remember.summarization import summarize
 
@@ -54,7 +56,8 @@ WINDOW = Window(
 )
 
 
-def test_run_window_executes_gap_retrieval_pack_and_summary():
+def test_run_window_executes_gap_retrieval_pack_and_summary(monkeypatch):
+    monkeypatch.setattr("remember.inference.Cl100kTokenCounter.count", WordCounter.count)
     generator = RecordingGenerator([
         json.dumps({"gaps": [{
             "utterance_index": 0,
@@ -75,9 +78,7 @@ def test_run_window_executes_gap_retrieval_pack_and_summary():
         top_k=2,
     )
 
-    result = run_window(
-        WINDOW, config, generator, KeywordEmbedder(), counter=WordCounter()
-    )
+    result = run_window(WINDOW, config, generator, KeywordEmbedder())
 
     assert result.window_id == "E_fixture"
     assert result.method == "pred_gap_hybrid_facet_turn_pack1024" == METHOD
@@ -91,36 +92,81 @@ def test_run_window_executes_gap_retrieval_pack_and_summary():
     assert result.effective_config["token_encoding"] == "cl100k_base"
 
 
-def test_dense_query_instruction_prefix_is_applied_only_to_queries_and_facets():
-    generator = RecordingGenerator(["not json"])
-    embedder = KeywordEmbedder()
-    config = RememberConfig(dense_query_prefix="CANONICAL PREFIX: ")
+def test_dense_query_instruction_prefix_is_applied_only_to_queries_and_facets(monkeypatch):
+    monkeypatch.setattr("remember.inference.Cl100kTokenCounter.count", WordCounter.count)
+    sparse_queries = []
+    original_bm25 = __import__("remember.retrieval", fromlist=["_bm25_scores"])._bm25_scores
 
-    run_window(
+    def record_bm25(query, chunks):
+        sparse_queries.append(query)
+        return original_bm25(query, chunks)
+
+    monkeypatch.setattr("remember.retrieval._bm25_scores", record_bm25)
+    generator = RecordingGenerator([json.dumps({"gaps": [{
+        "utterance_index": 0,
+        "quote": "Use cedar",
+        "gap_reason": "Missing plan",
+        "evidence_need_query": "retrieve earlier dialogue identifying cedar plan",
+        "keywords": ["cedar", "plan"],
+    }]}), '{"summary":"Fixture."}'])
+    embedder = KeywordEmbedder()
+    config = RememberConfig(chunk_tokens=32, overlap_tokens=0)
+
+    result = run_window(
         WINDOW,
         config,
         generator,
         embedder,
-        counter=WordCounter(),
-        memory_only=True,
     )
 
+    structured = (
+        "Find earlier dialogue that directly supports a faithful memory for the current window. "
+        "Current utterance: Use cedar. Missing context: Missing plan. "
+        "Needed evidence: retrieve earlier dialogue identifying cedar plan. "
+        "Anchor terms: cedar plan use missing retrieve earlier dialogue identifying use cedar. "
+        "Topic anchors: 10:00 ava: use launch.."
+    )
+    prefix = (
+        "Instruct: Given a current-window utterance with missing dialogue context, "
+        "retrieve earlier dialogue that directly supports a faithful memory item.\nQuery: "
+    )
     assert embedder.calls[0] == [
         "[09:00] Ava: The cedar plan uses a fixed budget.\n[09:01] Bo: The launch owner is Cy."
     ]
-    assert embedder.calls[1][0].startswith("CANONICAL PREFIX: ")
+    assert embedder.calls[1] == [prefix + structured]
+    assert sparse_queries == [structured]
     assert embedder.calls[2] == [
         "[09:00] Ava: The cedar plan uses a fixed budget.",
         "[09:01] Bo: The launch owner is Cy.",
     ]
-    assert all(text.startswith("CANONICAL PREFIX: ") for text in embedder.calls[3])
+    assert embedder.calls[3] == [
+        prefix + "retrieve earlier dialogue identifying cedar plan",
+        prefix + "Missing plan",
+        prefix + "Use cedar",
+    ]
+    assert result.retrieval
 
 
-def test_run_result_public_dict_has_required_fields_without_source_dialogue():
+def test_public_pipeline_signatures_match_the_brief_exactly():
+    expected = {
+        facet_turn_pack: ["window", "gaps", "retrieved", "embedder", "counter", "budget_tokens"],
+        summarize: [
+            "window", "memory", "generator", "prompt_with_memory", "prompt_without_memory"
+        ],
+        run_window: ["window", "config", "generator", "embedder"],
+        hybrid_retrieve: ["gaps", "chunks", "embedder", "top_k", "rrf_k"],
+    }
+    for function, names in expected.items():
+        assert list(inspect.signature(function).parameters) == names
+    assert inspect.signature(facet_turn_pack).parameters["budget_tokens"].default == 1024
+    assert inspect.signature(hybrid_retrieve).parameters["top_k"].default == 8
+    assert inspect.signature(hybrid_retrieve).parameters["rrf_k"].default == 60
+
+
+def test_run_result_public_dict_has_required_fields_without_source_dialogue(monkeypatch):
+    monkeypatch.setattr("remember.inference.Cl100kTokenCounter.count", WordCounter.count)
     generator = RecordingGenerator(["not json", '{"summary":"Fallback summary."}'])
-    result = run_window(
-        WINDOW, RememberConfig(), generator, KeywordEmbedder(), counter=WordCounter()
-    )
+    result = run_window(WINDOW, RememberConfig(), generator, KeywordEmbedder())
 
     public = result.to_dict()
 
@@ -145,13 +191,16 @@ def test_run_result_public_dict_has_required_fields_without_source_dialogue():
 def test_memory_only_skips_summary_generation():
     generator = RecordingGenerator(["not json"])
 
-    result = run_window(
+    result = _run_window(
         WINDOW,
         RememberConfig(),
         generator,
         KeywordEmbedder(),
         counter=WordCounter(),
         memory_only=True,
+        gap_prompt=_read_prompt("gap_detection.txt"),
+        summary_prompt_with_memory=_read_prompt("summary_with_memory.txt"),
+        summary_prompt_without_memory=_read_prompt("summary_window_only.txt"),
     )
 
     assert result.summary == ""

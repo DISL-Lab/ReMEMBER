@@ -7,8 +7,7 @@ from dataclasses import dataclass
 
 DENSE_QUERY_PREFIX = (
     "Instruct: Given a current-window utterance with missing dialogue context, "
-    "retrieve earlier dialogue that resolves the missing referent, artifact, "
-    "decision, rationale, or prior state.\nQuery: "
+    "retrieve earlier dialogue that directly supports a faithful memory item.\nQuery: "
 )
 
 
@@ -35,12 +34,12 @@ class RememberConfig:
     dense_query_prefix: str = DENSE_QUERY_PREFIX
 
     def __post_init__(self) -> None:
-        for name in (
-            "gap_model", "summary_model", "dense_model", "token_encoding",
-            "dense_query_prefix",
-        ):
+        for name in ("gap_model", "summary_model", "dense_model"):
             if not getattr(self, name).strip():
                 raise ConfigError(f"{name} must be a non-empty model ID")
+        for name in ("token_encoding", "dense_query_prefix"):
+            if not getattr(self, name).strip():
+                raise ConfigError(f"{name} must be a non-empty string")
         if not 1 <= self.max_gaps <= 8:
             raise ConfigError("max_gaps must be in 1..8")
         for name in (
