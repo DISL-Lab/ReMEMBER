@@ -287,6 +287,18 @@ def test_salient_ensemble_unions_and_deduplicates_surviving_groups_from_all_mode
     ]
 
 
+def test_salient_gap_type_all_different_uses_canonical_model_insertion_fallback():
+    rows = {
+        "gemma": [{"window_id": "E_U0000", "gaps": [{"target_sentence_numbers": [1], "gap_type": "A"}]}],
+        "GLM": [{"window_id": "E_U0000", "gaps": [{"target_sentence_numbers": [1], "gap_type": "L"}]}],
+        "Qwen": [{"window_id": "E_U0000", "gaps": [{"target_sentence_numbers": [1], "gap_type": "C"}]}],
+    }
+    assert ensemble_salient_votes(rows)[0]["gaps"][0]["gap_type"] == "A"
+
+    rows["gemma"][0]["gaps"][0]["gap_type"] = "L"
+    assert ensemble_salient_votes(rows)[0]["gaps"][0]["gap_type"] == "L"
+
+
 def test_validation_ensemble_zero_fills_absent_models_and_rejects_duplicate_judgments():
     def row(items):
         return [{

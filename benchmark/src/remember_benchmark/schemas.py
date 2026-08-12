@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 SCHEMA_VERSION = "1.0"
@@ -55,3 +56,13 @@ class NormalizedDialogue:
             "source": self.source,
             "turns": [turn.to_dict() for turn in self.turns],
         }
+
+
+def dialogue_sort_key(dialogue: NormalizedDialogue) -> tuple[int, int, int]:
+    """Canonical composed ordering: source, numeric topic, numeric group."""
+    prefix_order = {"evermembench": 0, "locomo": 1, "realtalk": 2}
+    prefix = SOURCE_PREFIX[dialogue.source]
+    match = re.fullmatch(rf"{prefix}_topic-(\d+)_group-(\d+)", dialogue.dialogue_id)
+    if match is None:
+        raise ValueError(f"dialogue_id is not a canonical composed source ID: {dialogue.dialogue_id!r}")
+    return prefix_order[dialogue.source], int(match.group(1)), int(match.group(2))

@@ -106,3 +106,34 @@ def test_schema_error_reports_source_path_and_location(tmp_path):
     path.write_text('{"topic_id": 1, "date": "2024-01-01", "dialogues": {"Group 1": [{"speaker": "A"}]}}\n', encoding="utf-8")
     with pytest.raises(SourceInputError, match=r"bad\.jsonl:1.*dialogues\[Group 1\]\[0\].*dialogue"):
         load_evermembench(path)
+
+
+def test_normalize_sources_orders_source_then_numeric_topic_group_across_eleven_topics(tmp_path):
+    ever = tmp_path / "ever.jsonl"
+    ever_rows = []
+    for topic in (10, 2, 11, 1, 9, 3, 8, 4, 7, 5, 6):
+        ever_rows.append({
+            "topic_id": topic,
+            "date": "2024-01-01",
+            "dialogues": {"Group 1": [{
+                "message_index": 0,
+                "time": "2024-01-01 00:00:00",
+                "speaker": "A",
+                "dialogue": f"topic {topic}",
+            }]},
+        })
+    ever.write_text("".join(json.dumps(row) + "\n" for row in ever_rows), encoding="utf-8")
+
+    locomo = tmp_path / "locomo.json"
+    locomo.write_text(json.dumps([{"conversation": {
+        "speaker_a": "A", "speaker_b": "B",
+        "session_1_date_time": "09:00 AM on 01 January, 2024",
+        "session_1": [{"speaker": "A", "dia_id": "d1", "text": "locomo"}],
+    }}]), encoding="utf-8")
+
+    rows = normalize_sources(evermembench=ever, locomo=locomo)
+
+    assert [row.dialogue_id for row in rows] == [
+        *(f"E_topic-{topic}_group-1" for topic in range(1, 12)),
+        "L_topic-1_group-1",
+    ]

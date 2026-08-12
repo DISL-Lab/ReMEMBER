@@ -40,6 +40,14 @@ def ensemble_salient_votes(
         raise ValueError("salient threshold must be between one and number of models")
     output: list[dict[str, Any]] = []
     priority = {"C": 0, "A": 1, "L": 2, "N": 3}
+
+    def majority_gap_type(types: list[str]) -> str:
+        counts = Counter(types)
+        for gap_type in priority:
+            if counts.get(gap_type, 0) >= 2:
+                return gap_type
+        return counts.most_common(1)[0][0]
+
     for window_id in windows:
         sentence_votes: dict[int, list[str]] = {}
         groups: set[tuple[int, ...]] = set()
@@ -76,8 +84,7 @@ def ensemble_salient_votes(
             if not set(coordinates) <= surviving:
                 continue
             types = sentence_votes[coordinates[0]]
-            counts = Counter(types)
-            gap_type = sorted(counts, key=lambda item: (-counts[item], priority.get(item, 99), item))[0]
+            gap_type = majority_gap_type(types)
             accepted.append({"gap_idx": len(accepted), "target_sentence_numbers": list(coordinates), "gap_type": gap_type})
         output.append({"schema_version": "1.0", "window_id": window_id, "gaps": accepted})
     return output

@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-import re
 from typing import Protocol
 
 from .config import PAPER_SOURCE_CONFIG, RANGES, WindowConfig
-from .schemas import NormalizedDialogue, SOURCE_PREFIX
+from .schemas import NormalizedDialogue, SOURCE_PREFIX, dialogue_sort_key
 
 
 class TokenCounter(Protocol):
@@ -25,15 +24,6 @@ def _format_turn(turn: object) -> str:
     return f"[{turn.time}] {turn.speaker}: {turn.dialogue}"  # type: ignore[attr-defined]
 
 
-def _dialogue_sort_key(dialogue: NormalizedDialogue) -> tuple[int, int, int]:
-    prefix_order = {"evermembench": 0, "locomo": 1, "realtalk": 2}
-    prefix = SOURCE_PREFIX[dialogue.source]
-    match = re.fullmatch(rf"{prefix}_topic-(\d+)_group-(\d+)", dialogue.dialogue_id)
-    if match is None:
-        raise ValueError(f"dialogue_id is not a canonical composed source ID: {dialogue.dialogue_id!r}")
-    return prefix_order[dialogue.source], int(match.group(1)), int(match.group(2))
-
-
 def build_windows(
     dialogues: Sequence[NormalizedDialogue],
     counter: TokenCounter,
@@ -43,7 +33,7 @@ def build_windows(
     source_configs = dict(PAPER_SOURCE_CONFIG if configs is None else configs)
     counters = {source: 0 for source in SOURCE_PREFIX}
     rows: list[dict[str, object]] = []
-    for dialogue in sorted(dialogues, key=_dialogue_sort_key):
+    for dialogue in sorted(dialogues, key=dialogue_sort_key):
         try:
             config = source_configs[dialogue.source]
         except KeyError as exc:

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .schemas import NormalizedDialogue, NormalizedTurn, SCHEMA_VERSION
+from .schemas import NormalizedDialogue, NormalizedTurn, SCHEMA_VERSION, dialogue_sort_key
 
 
 class SourceInputError(ValueError):
@@ -177,7 +177,7 @@ def normalize_sources(
         result.extend(load_locomo(locomo))
     if realtalk is not None:
         result.extend(load_realtalk(realtalk))
-    result.sort(key=lambda item: item.dialogue_id)
+    result.sort(key=dialogue_sort_key)
     ids = [item.dialogue_id for item in result]
     if len(ids) != len(set(ids)):
         raise SourceInputError("normalized dialogue_id values must be unique")
