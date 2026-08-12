@@ -1,76 +1,44 @@
-# ReMEMber public release
+<h1 align="center">
+ReMEMBER
+</h1>
 
-This repository publishes only the ReMEMber-owned parts of the project. It has three product folders:
+<h3 align="center">
+Don't Scroll Back: Missing-Evidence Memory for Streaming Dialogue Summarization
+</h3>
 
-- `dataset/` contains the text-free 900-window annotation release. It includes coordinates, gap labels,
-  evidence coordinates, and model votes, but no upstream dialogue or model reasoning.
-- `benchmark/` is the single, modular dataset-generation pipeline.
-- `remember/` is the end-to-end ReMEMber method: gap prediction, hybrid retrieval, facet-turn memory,
-  and final summarization.
+<div align="center">
+  <p>Authors: Hyangsuk Min and Hwanjun Song</p>
+  <a href="https://arxiv.org/abs/2608.09043">
+  <img src="https://img.shields.io/badge/arXiv-b31b1b?style=flat-square" alt="arXiv">
+  </a>
+  <a href="https://disl-lab.github.io/">
+  <img src = "https://img.shields.io/badge/Data%20Intelligence%20System%20Lab-B552CB.svg?logo=data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBzdGFuZGFsb25lPSJubyI/Pgo8IURPQ1RZUEUgc3ZnIFBVQkxJQyAiLS8vVzNDLy9EVEQgU1ZHIDIwMDEwOTA0Ly9FTiIKICJodHRwOi8vd3d3LnczLm9yZy9UUi8yMDAxL1JFQy1TVkctMjAwMTA5MDQvRFREL3N2ZzEwLmR0ZCI+CjxzdmcgdmVyc2lvbj0iMS4wIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiB3aWR0aD0iNTQ0LjAwMDAwMHB0IiBoZWlnaHQ9IjU0MS4wMDAwMDBwdCIgdmlld0JveD0iMCAwIDU0NC4wMDAwMDAgNTQxLjAwMDAwMCIKIHByZXNlcnZlQXNwZWN0UmF0aW89InhNaWRZTWlkIG1lZXQiPgoKPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoMC4wMDAwMDAsNTQxLjAwMDAwMCkgc2NhbGUoMC4xMDAwMDAsLTAuMTAwMDAwKSIKZmlsbD0iIzAwMDAwMCIgc3Ryb2tlPSJub25lIj4KPHBhdGggZD0iTTExNDggNDQzOSBsLTMgLTk1MSAtNzMgLTE5IGMtNTQwIC0xMzcgLTk1NSAtNTk0IC0xMDM2IC0xMTQxIC0xMTEKLTc0NyAzODUgLTE0NDQgMTEyOSAtMTU4NCA2NyAtMTIgMTY4IC0xOCAzOTMgLTIxIGwzMDIgLTUgMCAtMzU1IDAgLTM1NSA1NjgKNSBjNDQ1IDMgNTkwIDggNjcyIDIwIDQ4NyA3MiA5MjYgMjYxIDEzMDAgNTU3IDEyNCA5OCAzMzggMzEwIDQzNCA0MzAgMjc3CjM0NyA0NzggNzk2IDU1MCAxMjMwIDQxIDI0NSA0NiA1OTUgMTEgODI4IC02OSA0NzQgLTI2OCA5MzUgLTU2MSAxMzAyIC04NwoxMDkgLTMxNSAzMzcgLTQyNCA0MjQgLTMxNSAyNTEgLTY5MSA0MzEgLTEwOTEgNTIyIC0yNTUgNTcgLTI0OSA1NyAtMTI0NiA2MQpsLTkyMyA0IC0yIC05NTJ6IG0xOTQyIDU5NyBjNDEzIC02OSA3OTYgLTIzNyAxMTA1IC00ODQgODIzIC02NjAgMTExNCAtMTc1Nwo3MjYgLTI3MzUgLTE3MCAtNDI3IC00OTcgLTgyNSAtODk2IC0xMDkxIC0zMDUgLTIwNCAtNjg4IC0zMzkgLTEwNTkgLTM3NSAtNjAKLTYgLTI1OSAtMTEgLTQ0MyAtMTEgbC0zMzMgMCAwIDE5MCAwIDE5MCAyOTggMCBjNDQwIDAgNjE4IDIyIDg3MCAxMDYgMjg0IDk1CjUyMyAyNDAgNzQ1IDQ1MyAyNjAgMjUwIDQzNSA1NDYgNTM3IDkwOSA4NiAzMDQgODcgNjg4IDQgMTAwOCAtMjIzIDg1OSAtMTAwMgoxNDcxIC0xODc5IDE0NzcgLTk4IDAgLTE2MiAtNSAtMjE0IC0xNiAtMzE5IC03MyAtNTYzIC0zMDAgLTY1NyAtNjE0IC0yNSAtODEKLTI3IC0xMDYgLTMyIC0zMDUgbC00IC0yMTggLTEzNyAwIGMtNzUgMCAtMTYwIC0zIC0xODggLTYgbC01MyAtNyAwIDc3NyAwCjc3NyA3NTMgLTQgYzY2MCAtMyA3NjUgLTUgODU3IC0yMXogbS0xNzAgLTcwMSBjOTQ1IC0xMTAgMTU5NiAtOTg0IDE0MzQKLTE5MjUgLTE5IC0xMTQgLTc5IC0yOTkgLTEzMiAtNDEyIC0yMTAgLTQ0OCAtNjE2IC03NzkgLTExMDcgLTkwMiAtMTM3IC0zNQotMjkwIC00NiAtNjExIC00NiBsLTMxNCAwIDAgMTk1IDAgMTk1IDMyOSAwIGMzOTkgLTEgNDc2IDkgNjc4IDg2IDIyNSA4NiA0NDcKMjY2IDU4OCA0NzggMjE1IDMyNCAyNjcgNzQwIDEzOCAxMTEwIC00MiAxMjEgLTY5IDE3NSAtMTQxIDI4NiAtNjggMTA0IC0yNDAKMjc4IC0zMzcgMzQyIC0yMTIgMTM5IC00NTkgMjE4IC02ODAgMjE4IC02OSAwIC04NyAtNCAtMTE1IC0yMiAtNzggLTUzIC0xMDAKLTEzOCAtNTggLTIxNyAzNCAtNjMgNzUgLTgxIDIwMyAtOTEgMzY0IC0zMCA2NTYgLTI0MCA4MDAgLTU3NyA0NyAtMTEwIDY4Ci0yMTcgNjkgLTM1MyAxIC0zNjIgLTIwMCAtNjgyIC01MjggLTg0MCAtMTc2IC04NCAtMjY4IC05OCAtNjczIC05OSBsLTI3MyAtMgowIDEwNTkgYzAgOTA1IDIgMTA2NiAxNSAxMTE1IDUxIDE5OCAyMTggMzU5IDQxNSA0MDEgODYgMTkgMTQ5IDE5IDMwMCAxegptLTEwNjIgLTE4NTcgbC0zIC03MTMgLTU3IDMgYy0xMzMgNiAtMjUzIDg5IC0yOTYgMjA1IC0yMiA1NyAtMjIgNjggLTIyIDYzNwpsMCA1ODAgMTkwIDAgMTkwIDAgLTIgLTcxMnogbS03MDggMTA1IGMwIC02MzggMCAtNjM2IDcyIC03ODMgMzMgLTY3IDYwIC0xMDIKMTIzIC0xNjUgMTIzIC0xMjQgMjQ5IC0xODEgNDIwIC0xOTQgbDkwIC02IDMgLTE5MyAyIC0xOTQgLTMwMiA1IGMtMjI0IDQKLTMyMCA5IC0zNjggMjAgLTQyOSAxMDIgLTc1MiA0MzYgLTgyNSA4NTQgLTE5IDEwOCAtMTkgMjc0IC0xIDM3OCA2NyAzNzggMzQzCjY5OCA3MTEgODI0IDMzIDExIDYzIDIwIDY4IDIxIDQgMCA3IC0yNTUgNyAtNTY3eiIvPgo8L2c+Cjwvc3ZnPgo=&style=flat-square">
+  </a>
 
-The `docs/`, `scripts/`, and `tests/` folders support the release. They are not additional products.
+<!-- <p align="center">
+  <img src="https://github.com/user-attachments/assets/4dfaef99-3703-43ea-b0a2-b0def5920d71" alt="" width="1000">
+</p> -->
+
+</div>
+
+---
+
+This is the official github repository for "Don't Scroll Back: Missing-Evidence Memory for Streaming Dialogue Summarization"
+
+---
+
+- [`dataset/`](dataset/README.md): the 900-window annotation dataset.
+- [`benchmark/`](benchmark/README.md): the dataset-generation pipeline.
+- [`remember/`](remember/README.md): the end-to-end ReMEMber method.
 
 ## Install
-
-Use separate editable installs if desired:
 
 ```bash
 python -m pip install ./benchmark
 python -m pip install ./remember
 ```
 
-The base packages require PyYAML and `tiktoken`. OpenAI-compatible clients, vLLM, sentence-transformer
-retrieval, and their model weights are optional extras; installing or running tests does not download
-models. Real provider credentials are read from an environment-variable name selected at runtime and
-are never stored in configuration.
+## Usage
 
-## Quick start
-
-Run the ReMEMber method with its deterministic CPU fake provider:
-
-```bash
-PYTHONPATH=remember/src python -m remember run \
-  --config remember/configs/paper.yaml \
-  --input INPUT_WINDOWS.jsonl \
-  --output OUTPUT.jsonl \
-  --provider fake
-```
-
-Build benchmark annotations with one command after filling a copy of the paper configuration with
-paths to user-acquired source corpora and an ordered split:
-
-```bash
-PYTHONPATH=benchmark/src python -m remember_benchmark build \
-  --config CONFIG.yaml \
-  --work-dir PRIVATE_WORK_DIR \
-  --output-dir PUBLIC_OUTPUT_DIR \
-  --provider openai
-```
-
-The benchmark command contains eight resumable stages in fixed order: `sources`, `windows`, `salient`,
-`chunk_filter`, `evidence`, `validation`, `ensemble`, and `release`. See
-[`benchmark/README.md`](benchmark/README.md) for partial execution and provider details.
-
-## Inputs, outputs, and privacy boundary
-
-EverMemBench, LoCoMo, and RealTalk are not redistributed here. Acquire them from their respective
-upstream distributors and supply their local paths. The caller-selected benchmark `work-dir` contains
-normalized dialogue, prompts sent to providers, target sentences, evidence text, and intermediate model
-decisions. It is private working data: do not commit, upload, or distribute it.
-
-The public output contains sanitized annotations, schema, metadata, and the ordered split. The checked-in
-dataset has exactly 900 windows, 1,498 gaps, and 4,135 validated evidence links. Run
-`python scripts/validate_release.py` to verify hashes, counts, Python compilation, CPU-only tests and
-smokes, layout, and leakage checks.
-
-## Reproduction and ownership limitations
-
-The deterministic code path, schemas, thresholds, stage order, prompts, and manifests are provided.
-Outputs from real language models are not guaranteed to be byte-identical across model revisions,
-serving stacks, hardware, or provider behavior. This release was validated with scripted CPU providers;
-it does not claim that every optional real-provider or GPU combination was executed.
-
-Project-authored annotations, code, prompts, and documentation in this repository are released under
-the repository's MIT License. Upstream dialogue remains governed by its original owners and licenses
-and is deliberately absent; the MIT License does not grant rights to those upstream corpora or model
-weights.
+- ReMEMber method: [`remember/README.md`](remember/README.md)
+- Dataset generation: [`benchmark/README.md`](benchmark/README.md)
