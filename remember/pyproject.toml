@@ -7,11 +7,12 @@ name = "remember"
 version = "0.1.0"
 description = "Self-contained core of the ReMEMber retrieval method"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["PyYAML>=6", "tiktoken>=0.7"]
 
 [project.optional-dependencies]
-retrieval = ["rank-bm25>=0.2.2", "tiktoken>=0.7"]
-inference = ["sentence-transformers>=3", "openai>=1"]
+retrieval = ["sentence-transformers>=3"]
+inference = ["openai>=1"]
+vllm = ["vllm>=0.8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

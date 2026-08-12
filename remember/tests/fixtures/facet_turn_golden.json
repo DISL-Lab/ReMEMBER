@@ -1,0 +1,49 @@
+{
+  "window": {
+    "window_id": "E_facet_fixture",
+    "history": [
+      {"time": "09:00", "speaker": "Ava", "dialogue": "Cedar query evidence. This complete turn is retained."},
+      {"time": "09:01", "speaker": "Bo", "dialogue": "Budget reason evidence."},
+      {"time": "09:02", "speaker": "Cy", "dialogue": "Launch utterance evidence."},
+      {"time": "09:03", "speaker": "Di", "dialogue": "Cedar query alternative."}
+    ],
+    "turns": [
+      {"time": "10:00", "speaker": "Ava", "dialogue": "Use it for launch."}
+    ]
+  },
+  "gaps": [
+    {
+      "index": 0,
+      "utterance_index": 0,
+      "quote": "launch utterance",
+      "gap_reason": "budget reason",
+      "evidence_need_query": "cedar query",
+      "keywords": ["cedar", "launch"]
+    }
+  ],
+  "retrieved": [
+    {
+      "chunk_id": 7,
+      "score": 0.25,
+      "source_start_index": 0,
+      "source_end_index": 3,
+      "text": "[09:00] Ava: Cedar query evidence. This complete turn is retained.\n[09:01] Bo: Budget reason evidence.\n[09:02] Cy: Launch utterance evidence.\n[09:03] Di: Cedar query alternative."
+    }
+  ],
+  "expected": {
+    "texts": [
+      "[09:00] Ava: Cedar query evidence. This complete turn is retained.",
+      "[09:01] Bo: Budget reason evidence.",
+      "[09:02] Cy: Launch utterance evidence.",
+      "[09:03] Di: Cedar query alternative."
+    ],
+    "facet_types": [
+      ["evidence_need_query", "gap_reason", "gap_utterance"],
+      ["evidence_need_query", "gap_reason", "gap_utterance"],
+      ["evidence_need_query", "gap_reason", "gap_utterance"],
+      ["evidence_need_query", "gap_reason", "gap_utterance"]
+    ],
+    "policy": "gap_facet_dense_turn_winner_refill_pack",
+    "layout": "raw_source_turns_selected_by_gap_facet_cosine"
+  }
+}

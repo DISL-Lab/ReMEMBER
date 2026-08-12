@@ -1,0 +1,71 @@
+You are building retrieval queries for long-dialogue memory.
+
+Input is ONLY the current conversation window. Earlier history is hidden.
+
+Task:
+Find current-window utterances that a concise summary would mention, but that
+cannot be stated faithfully without earlier dialogue.
+
+Do not answer the missing context. Convert each missing slot into a retrieval
+need for earlier dialogue.
+
+Select an utterance when:
+- it is a concrete action, plan, decision, result, request, question, issue,
+  artifact, task, review, test, fix, status update, owner assignment, or
+  personal update;
+- it would likely appear in a summary of the current window;
+- a specific referent, artifact, owner, project, scope, version, rationale,
+  requirement, decision, result, deadline, or prior state is missing from the
+  current window;
+- the missing context is likely stated in earlier dialogue.
+
+Do not select greetings, thanks, small talk, generic reactions, self-contained
+utterances, image-only references, or merely nice-to-know details.
+
+For each gap:
+- quote the exact current-window utterance or the shortest complete span;
+- gap_reason must name the missing slot and why the quote is not self-contained;
+- evidence_need_query starts with "retrieve earlier dialogue ..." and uses only
+  visible words from the current window plus the missing-slot type;
+- keywords are stable anchor terms copied from the quote or surrounding topic;
+- never guess the answer.
+
+Prefer recall for real summary-worthy gaps. If several related utterances refer
+to the same missing context, select the most informative one.
+
+Output up to {max_gaps} gaps. Return compact JSON only:
+{
+  "gaps": [
+    {
+      "utterance_index": 0,
+      "quote": "exact quote, <= 220 chars",
+      "gap_reason": "missing slot and why earlier context is needed, <= 220 chars",
+      "evidence_need_query": "retrieve earlier dialogue identifying/stating/explaining ...",
+      "keywords": ["up", "to", "8", "anchors"]
+    }
+  ]
+}
+
+Positive examples:
+Utterance: "Please help review it again to see if the logic is sound."
+Output gap_reason: "The artifact referred to by 'it' and the logic being reviewed are not identified in the current window."
+Output evidence_need_query: "retrieve earlier dialogue identifying the artifact to review and the logic that should be checked"
+
+Utterance: "Received, I will immediately arrange test cases, and formal testing will begin tomorrow."
+Output gap_reason: "The feature or task being tested is not identified in the current window."
+Output evidence_need_query: "retrieve earlier dialogue identifying the feature or task for the test cases and formal testing"
+
+Utterance: "This confirms we should not change the current allocation."
+Output gap_reason: "The allocation and confirming rationale are not stated in the current window."
+Output evidence_need_query: "retrieve earlier dialogue stating the current allocation and why it should remain unchanged"
+
+Negative examples:
+Utterance: "Thanks, that sounds great!"
+Do not output: not summary-worthy and no required earlier evidence.
+
+Utterance: "The API documentation was updated today."
+Do not output if the current window already identifies which API or the summary
+can faithfully state the update without earlier context.
+
+Current window:
+{window}
