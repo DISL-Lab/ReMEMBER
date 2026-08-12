@@ -29,6 +29,6 @@ does not convey target wording, evidence wording, annotator rationale, or
 unvalidated links, so it is unsuitable for text-generation training or for
 reproducing text-level judgments by itself.
 
-License selection for this annotation-only release remains an unresolved
-release gate. Do not treat this directory as licensed for redistribution until
-the project owners add an explicit license decision.
+The project-authored annotation release is provided under the repository's MIT
+License. This does not grant rights to the upstream corpora; users must obtain
+and use those datasets under their respective terms.

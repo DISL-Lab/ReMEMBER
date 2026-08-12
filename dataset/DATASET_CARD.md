@@ -48,7 +48,8 @@ also retains source-derived labels and model-vote metadata, which may reflect
 annotation and model biases. Use it for the stated structural evaluation scope,
 and respect each upstream source's terms when obtaining any source material.
 
-## License status
+## License
 
-License selection is unresolved and remains a release gate. Project owners
-must choose and publish an explicit license before public distribution.
+The project-authored annotation release is provided under the repository's MIT
+License. Upstream corpora are not redistributed or relicensed here and remain
+subject to their respective terms.

@@ -22,7 +22,7 @@
 - Both public CLIs must have CPU-only tests using deterministic fake providers. Default tests must not access the network, download models, or require a GPU.
 - All JSONL inputs must report path and line number on malformed JSON or schema failure. All durable writes use a temporary sibling plus atomic rename.
 - Resume must never duplicate a `window_id`; changed input/configuration hashes must stop instead of silently reusing stale output.
-- No license text may be invented. Documentation must state that maintainers still need to select the code and annotation licenses before publication.
+- Preserve the repository's existing MIT License and clearly distinguish it from upstream corpus and model terms; do not invent or replace license text.
 
 ---
 
@@ -131,7 +131,7 @@ Expected: all tests pass with exact paper counts.
 
 - [ ] **Step 8: Write dataset documentation**
 
-Document field meanings, upstream acquisition responsibility, join keys, the removal of all free text, exact denominators, limitations, and the unresolved license-selection gate. Do not paste examples from the source corpora.
+Document field meanings, upstream acquisition responsibility, join keys, the removal of all free text, exact denominators, limitations, and the repository MIT License boundary. Do not paste examples from the source corpora.
 
 - [ ] **Step 9: Commit**
 
@@ -510,7 +510,7 @@ Expected: FAIL until validation script and root documentation are complete.
 
 - [ ] **Step 8: Implement the validation command and root documentation**
 
-`validate_release.py` prints a machine-readable summary with dataset counts, file hashes, Python compile result, test commands, and leakage-scan result. The root README explains the three folders, quick-start commands, optional dependencies, ownership boundary, known reproduction limitations, and the license-selection publication gate.
+`validate_release.py` prints a machine-readable summary with dataset counts, file hashes, Python compile result, test commands, and leakage-scan result. The root README explains the three folders, quick-start commands, optional dependencies, ownership boundary, known reproduction limitations, and the MIT/upstream-license boundary.
 
 - [ ] **Step 9: Run package and whole-release verification**
 

@@ -62,6 +62,7 @@ def test_validator_prints_one_machine_readable_json_summary():
 
 def test_documentation_and_three_product_folders_exist():
     assert (ROOT / "README.md").is_file()
+    assert (ROOT / "LICENSE").read_text(encoding="utf-8").startswith("MIT License")
     assert (ROOT / "benchmark/README.md").is_file()
     assert {path.name for path in ROOT.iterdir() if path.is_dir() and path.name in {"dataset", "benchmark", "remember"}} == {
         "dataset", "benchmark", "remember"

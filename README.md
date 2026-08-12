@@ -70,8 +70,7 @@ Outputs from real language models are not guaranteed to be byte-identical across
 serving stacks, hardware, or provider behavior. This release was validated with scripted CPU providers;
 it does not claim that every optional real-provider or GPU combination was executed.
 
-Only project-authored annotations, code, prompts, and documentation are intended for publication.
-Upstream dialogue remains governed by its original owners and licenses and is deliberately absent.
-Before public distribution, maintainers must select and add an appropriate repository license after
-confirming compatibility with all project-authored components. Until then, license selection is an
-explicit publication gate.
+Project-authored annotations, code, prompts, and documentation in this repository are released under
+the repository's MIT License. Upstream dialogue remains governed by its original owners and licenses
+and is deliberately absent; the MIT License does not grant rights to those upstream corpora or model
+weights.

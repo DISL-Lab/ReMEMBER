@@ -135,8 +135,9 @@ effective configuration, and published output.
 - `--resume` and `--overwrite` are mutually exclusive.
 - Changed input or configuration stops the run instead of reusing stale rows.
 
-## Publication status
+## License
 
-Maintainers still need to select and add the code and annotation licenses
-before publication. This repository does not invent or imply license terms for
-upstream dialogue data, model weights, or generated outputs.
+The project-authored implementation, prompts, documentation, and released
+annotations are provided under the repository's MIT License. This license does
+not apply to upstream dialogue data, model weights, or separately generated
+outputs governed by other terms.

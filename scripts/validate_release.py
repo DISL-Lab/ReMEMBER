@@ -16,7 +16,10 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ALLOWED_TOP = {"dataset", "benchmark", "remember", "docs", "scripts", "tests", "README.md", ".gitignore"}
+ALLOWED_TOP = {
+    "dataset", "benchmark", "remember", "docs", "scripts", "tests",
+    "README.md", "LICENSE", ".gitignore",
+}
 IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache"}
 FORBIDDEN_DIRS = {".venv", "venv", "build", "dist", "checkpoints"}
 FORBIDDEN_SUFFIXES = {".ipynb", ".log", ".zip", ".tar", ".gz", ".7z", ".rar", ".pyc",
