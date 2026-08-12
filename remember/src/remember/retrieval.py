@@ -59,7 +59,10 @@ def build_token_chunks(
             retained_tokens = 0
             for previous in reversed(current_indexes):
                 previous_tokens = turn_lengths[previous]
-                if retained_tokens + previous_tokens > overlap_tokens:
+                if (
+                    retained_tokens + previous_tokens > overlap_tokens
+                    or retained_tokens + previous_tokens + token_count > max_tokens
+                ):
                     break
                 retained.insert(0, previous)
                 retained_tokens += previous_tokens

@@ -44,6 +44,19 @@ def test_chunking_retains_whole_turn_overlap_without_duplicate_chunk_ids():
     assert len({chunk.chunk_id for chunk in chunks}) == len(chunks)
 
 
+def test_chunking_drops_excess_overlap_before_adding_a_fitting_turn():
+    history = (
+        Turn("1", "A", "one two"),
+        Turn("2", "B", "three four"),
+        Turn("3", "A", "five six"),
+    )
+
+    chunks = build_token_chunks(history, WordCounter(), max_tokens=10, overlap_tokens=8)
+
+    assert [(chunk.start_turn_index, chunk.end_turn_index) for chunk in chunks] == [(0, 1), (1, 2)]
+    assert all(WordCounter().count(chunk.text) <= 10 for chunk in chunks)
+
+
 def test_hybrid_retrieval_fuses_sparse_and_dense_candidates_per_gap():
     chunks = (
         Chunk(0, 0, 0, (), "cedar"),

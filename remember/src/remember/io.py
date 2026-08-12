@@ -16,7 +16,7 @@ class InputError(ValueError):
 
 
 def _error(path: Path, line_number: int, message: str) -> InputError:
-    return InputError(f"{path.name}:{line_number}: {message}")
+    return InputError(f"{path}:{line_number}: {message}")
 
 
 def _parse_turn(value: Any, location: str, path: Path, line_number: int) -> Turn:

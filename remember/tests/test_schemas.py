@@ -35,6 +35,18 @@ def test_window_requires_complete_turn_fields(tmp_path):
         list(load_windows(path))
 
 
+def test_window_error_retains_the_supplied_nested_input_path(tmp_path):
+    path = tmp_path / "inputs" / "bad.jsonl"
+    path.parent.mkdir()
+    path.write_text('{"window_id":"w","history":[{"speaker":"A"}],"turns":[]}\n')
+
+    with pytest.raises(InputError) as raised:
+        list(load_windows(path))
+
+    assert str(path) in str(raised.value)
+    assert ":1:" in str(raised.value)
+
+
 def test_loader_reports_malformed_json_with_path_and_line(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text('{"window_id":"one","history":[],"turns":[]}\nnot json\n')
