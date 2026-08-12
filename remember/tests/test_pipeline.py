@@ -3,7 +3,7 @@ import inspect
 
 from remember.config import RememberConfig
 from remember.facet_turn import MemoryResult, facet_turn_pack
-from remember.pipeline import METHOD, _read_prompt, _run_window, run_window
+from remember.pipeline import _read_prompt, _run_window, run_window
 from remember.retrieval import hybrid_retrieve
 from remember.schemas import Turn, Window
 from remember.summarization import summarize
@@ -81,7 +81,8 @@ def test_run_window_executes_gap_retrieval_pack_and_summary(monkeypatch):
     result = run_window(WINDOW, config, generator, KeywordEmbedder())
 
     assert result.window_id == "E_fixture"
-    assert result.method == "pred_gap_hybrid_facet_turn_pack1024" == METHOD
+    assert result.schema_version == "1.1"
+    assert "method" not in result.to_dict()
     assert result.memory.token_count <= 1024
     assert result.summary == "Fixture summary."
     assert [call["model"] for call in generator.calls] == [
@@ -173,7 +174,6 @@ def test_run_result_public_dict_has_required_fields_without_source_dialogue(monk
     assert set(public) == {
         "schema_version",
         "window_id",
-        "method",
         "predicted_gaps",
         "retrieval",
         "memory",
@@ -182,6 +182,7 @@ def test_run_result_public_dict_has_required_fields_without_source_dialogue(monk
         "timing_seconds",
         "effective_config",
     }
+    assert public["schema_version"] == "1.1"
     assert "history" not in public
     assert "turns" not in public
     assert "The cedar plan uses a fixed budget." not in json.dumps(public["predicted_gaps"])

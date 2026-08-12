@@ -1,10 +1,9 @@
 # ReMEMber
 
-This package is a self-contained implementation of the paper method
-`pred_gap_hybrid_facet_turn_pack1024`. It predicts contextual gaps from only
-the current window, retrieves earlier dialogue with BM25 plus dense embeddings,
-packs retrieved evidence with canonical round-robin facet-turn allocation, and
-optionally produces a reinforced summary.
+This package is a self-contained implementation of ReMEMber. It predicts
+contextual gaps from only the current window, retrieves earlier dialogue with
+BM25 plus dense embeddings, packs retrieved evidence with round-robin
+facet-turn allocation, and optionally produces a reinforced summary.
 
 The public runner never reads relevant-chunk-validation (RCV) or other gold
 annotations. It does not import research scripts at runtime.
@@ -110,7 +109,7 @@ the complete end-to-end summary path.
 
 Every output JSON object has these top-level fields:
 
-- `schema_version`, `window_id`, and the exact canonical `method`
+- `schema_version` and `window_id`
 - normalized `predicted_gaps` and per-gap `retrieval`
 - `memory`, including selected evidence items, layout, policy, and token count
 - `summary`

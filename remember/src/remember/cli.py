@@ -21,7 +21,7 @@ from .inference import (
     VLLMGenerator,
 )
 from .io import _fsync_parent, atomic_write_jsonl, load_windows
-from .pipeline import _read_prompt, _run_window
+from .pipeline import SCHEMA_VERSION, _read_prompt, _run_window
 from .schemas import Embedder, TokenCounter
 
 
@@ -103,6 +103,7 @@ def run_file(
     manifest_path = _manifest_path(output_path)
     run_config = {
         **asdict(config),
+        "output_schema_version": SCHEMA_VERSION,
         "memory_only": memory_only,
         "runtime": dict(runtime_config or {
             "generator_adapter": type(generator).__name__,

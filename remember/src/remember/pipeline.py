@@ -16,8 +16,7 @@ from .schemas import Embedder, PredictedGap, RetrievedChunk, TokenCounter, Windo
 from .summarization import _summarize, render_window
 
 
-METHOD = "pred_gap_hybrid_facet_turn_pack1024"
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 PACKAGE_ROOT = files("remember")
 PROMPT_ROOT = PACKAGE_ROOT.joinpath("prompts")
 
@@ -25,7 +24,6 @@ PROMPT_ROOT = PACKAGE_ROOT.joinpath("prompts")
 @dataclass(frozen=True)
 class RunResult:
     window_id: str
-    method: str
     predicted_gaps: tuple[PredictedGap, ...]
     retrieval: dict[int, tuple[RetrievedChunk, ...]]
     memory: MemoryResult
@@ -39,7 +37,6 @@ class RunResult:
         return {
             "schema_version": self.schema_version,
             "window_id": self.window_id,
-            "method": self.method,
             "predicted_gaps": [asdict(gap) for gap in self.predicted_gaps],
             "retrieval": {
                 str(gap_index): [asdict(item) for item in items]
@@ -195,7 +192,6 @@ def _run_window(
 
     return RunResult(
         window_id=window.window_id,
-        method=METHOD,
         predicted_gaps=gaps,
         retrieval=retrieval,
         memory=memory,

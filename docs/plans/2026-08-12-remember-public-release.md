@@ -16,7 +16,7 @@
 - Do not distribute model summaries, generated memories, factuality atoms, evaluator outputs, MTurk artifacts, logs, notebooks, caches, or model weights.
 - Dataset output order must match `main_900.txt`; every evidence entry must have `validation == 1`.
 - Release code must not contain machine-local absolute paths, fixed GPU IDs, credential literals, external key-file fallbacks, `nohup`, or runtime imports from `0-dataset/`, `1-research/`, or `2-rebuttal/`.
-- The canonical ReMEMber method is `pred_gap_hybrid_facet_turn_pack1024`: at most 8 gaps, 128-token chunks, 32-token overlap, BM25 plus Qwen3-Embedding-0.6B dense retrieval, reciprocal-rank fusion constant 60, round-robin facet-turn packing, a 1,024-token memory budget, and `cl100k_base` token accounting.
+- The ReMEMber configuration uses at most 8 gaps, 128-token chunks, 32-token overlap, BM25 plus Qwen3-Embedding-0.6B dense retrieval, reciprocal-rank fusion constant 60, round-robin facet-turn packing, a 1,024-token memory budget, and `cl100k_base` token accounting.
 - Default gap and summary model: `Qwen/Qwen3.5-4B`; default dense model: `Qwen/Qwen3-Embedding-0.6B`.
 - RCV/gold annotations are never required or read by `remember run`; a window-ID filter may only restrict the inference population.
 - Both public CLIs must have CPU-only tests using deterministic fake providers. Default tests must not access the network, download models, or require a GPU.
@@ -294,7 +294,7 @@ Expected: all tests pass.
 def test_run_window_executes_gap_retrieval_pack_and_summary(fake_generator, fake_embedder):
     result = run_window(WINDOW, PAPER_CONFIG, fake_generator, fake_embedder)
     assert result.window_id == "E_fixture"
-    assert result.method == "pred_gap_hybrid_facet_turn_pack1024"
+    assert result.schema_version == "1.1"
     assert result.memory.token_count <= 1024
     assert result.summary == "Fixture summary."
 
@@ -314,7 +314,7 @@ Expected: FAIL because inference, pipeline, and CLI modules do not exist.
 
 Define protocols before adapters. Provide a deterministic fake adapter for tests, an OpenAI-compatible chat adapter using `OPENAI_API_KEY` or an explicit environment-variable name, a lazy in-process vLLM adapter, and a lazy sentence-transformers embedder. Never inspect cache internals or a YAML key file. Set device visibility before heavyweight imports.
 
-Output each window as a JSON object with `schema_version`, `window_id`, `method`, `predicted_gaps`, `retrieval`, `memory`, `summary`, `token_counts`, `timing_seconds`, and `effective_config`. Do not echo `history` or `turns`. Resume validates an adjacent manifest's input and configuration hashes and rewrites atomically without duplicates.
+Output each window as a JSON object with `schema_version`, `window_id`, `predicted_gaps`, `retrieval`, `memory`, `summary`, `token_counts`, `timing_seconds`, and `effective_config`. Do not echo `history` or `turns`. Resume validates an adjacent manifest's input and configuration hashes and rewrites atomically without duplicates.
 
 - [ ] **Step 8: Run pipeline and CLI tests and verify GREEN**
 

@@ -2,12 +2,11 @@
 
 from .config import RememberConfig
 from .facet_turn import MemoryItem, MemoryResult, facet_turn_pack
-from .pipeline import METHOD, RunResult, run_window
+from .pipeline import RunResult, run_window
 from .schemas import Chunk, PredictedGap, RetrievedChunk, Turn, Window
 from .summarization import summarize
 
 __all__ = [
-    "METHOD",
     "Chunk",
     "MemoryItem",
     "MemoryResult",

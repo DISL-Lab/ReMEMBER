@@ -163,9 +163,29 @@ def test_cli_fake_provider_runs_without_network_and_never_echoes_input_dialogue(
     assert "history" not in row and "turns" not in row
     assert "Earlier cedar detail w1." not in json.dumps(row["predicted_gaps"])
     assert set(row) == {
-        "schema_version", "window_id", "method", "predicted_gaps", "retrieval",
+        "schema_version", "window_id", "predicted_gaps", "retrieval",
         "memory", "summary", "token_counts", "timing_seconds", "effective_config",
     }
+    assert row["schema_version"] == "1.1"
+
+
+def test_resume_rejects_output_schema_version_change(monkeypatch, tmp_path):
+    source = tmp_path / "input.jsonl"
+    output = tmp_path / "out.jsonl"
+    _write_windows(source, ids=("w1",))
+    common = dict(
+        input_path=source,
+        output_path=output,
+        config=RememberConfig(),
+        generator=DeterministicFakeGenerator(),
+        embedder=DeterministicHashEmbedder(),
+        counter=WordCounter(),
+    )
+    run_file(**common)
+
+    monkeypatch.setattr(cli, "SCHEMA_VERSION", "9.9")
+    with pytest.raises(ResumeError, match="configuration hash"):
+        run_file(**common, resume=True)
 
 
 def test_paper_config_uses_canonical_v15_prompt_and_dense_prefix():
