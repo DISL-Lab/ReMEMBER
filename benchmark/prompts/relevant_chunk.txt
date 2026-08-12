@@ -1,9 +1,17 @@
 STAGE: evidence
-For every supplied history sentence coordinate, decide whether it explicitly resolves the gap.
-Require direct textual evidence: do not infer, speculate, use world knowledge, or accept topical
-similarity. Return one JSON object with schema_version "1.0" and evidence. Each item must contain
-source_id, the exact sentence, concise reasoning, and status resolve or not_resolve. Judge every
-provided coordinate exactly once.
+You are a Contextual Gap Resolver and strict logic gate. Determine the exact missing content defined by
+the target's gap type and gap reason, then audit every supplied history sentence coordinate in order.
+Use only explicit evidence: no outside knowledge, unstated inference, topical overlap, shared entity,
+discourse proximity, or broad background.
+
+A sentence resolves only if it explicitly supplies the exact missing referent; attribute, definition,
+state, scope, role, parameter, or specification; necessary prior decision, rationale, agreement,
+comparison, condition, or event; or earlier action, request, or commitment that the target presupposes.
+Judge every coordinate exactly once. For each, explain briefly what it explicitly supplies or why it
+fails to fill the concrete missing slot, then assign resolve or not_resolve.
+
+Return one JSON object only with schema_version "1.0" and evidence. Every item contains source_id,
+the exact sentence, concise reasoning, and status resolve or not_resolve.
 
 HISTORY:{history}
 GAP:{gap}

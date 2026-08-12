@@ -57,8 +57,8 @@ PYTHONPATH=benchmark/src python -m remember_benchmark build \
 
 Stage names and order are validated. A partial run verifies every skipped prerequisite. Ending before
 `release` does not create public artifacts. Existing outputs are protected unless `--resume` or
-`--overwrite` is explicit; these flags are mutually exclusive. Overwrite is scoped to the selected stage
-and its downstream stages.
+`--overwrite` is explicit; these flags are mutually exclusive. Without `--to-stage`, overwrite runs from
+the selected stage through `release`. An explicit `--to-stage` is the bound; later stages remain untouched.
 
 ## Artifact boundary
 
@@ -78,5 +78,8 @@ maps. Private target text is joined from the merged salient stage only inside th
 discarded during export.
 
 Real language-model generations may vary across model/provider revisions and therefore may not reproduce
-the published annotations byte-for-byte. Only scripted CPU providers were exercised in this release
-validation; optional real providers and GPU serving require environment-specific validation by the user.
+the published annotations byte-for-byte. The paper configuration's exact expected counts are a fail-closed
+publication integrity contract: if a real-model run drifts, `release` aborts without replacing the public
+directory, while complete private intermediates remain in the work directory for inspection. Only scripted
+CPU providers were exercised in this release validation; optional real providers and GPU serving require
+environment-specific validation by the user.

@@ -6,7 +6,7 @@
     },
     "schema": {
       "path": "schema.json",
-      "sha256": "d8d2283ff6e245f0b2f18a37ef6d2cb722ca54726642816beeb8cc1dfc93cdf6"
+      "sha256": "2bea6dcd4446fd7f3c980f8d9c8a50d6ffd7757b097ca6efff4db7912999e5c2"
     },
     "split": {
       "path": "splits/main_900.txt",

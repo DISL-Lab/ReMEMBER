@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from importlib.resources import files
 from time import perf_counter
 from typing import Any, Sequence
 
@@ -18,8 +18,8 @@ from .summarization import _summarize, render_window
 
 METHOD = "pred_gap_hybrid_facet_turn_pack1024"
 SCHEMA_VERSION = "1.0"
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-PROMPT_ROOT = PACKAGE_ROOT / "prompts"
+PACKAGE_ROOT = files("remember")
+PROMPT_ROOT = PACKAGE_ROOT.joinpath("prompts")
 
 
 @dataclass(frozen=True)
@@ -63,7 +63,7 @@ class RunResult:
 
 
 def _read_prompt(name: str) -> str:
-    return (PROMPT_ROOT / name).read_text(encoding="utf-8")
+    return PROMPT_ROOT.joinpath(name).read_text(encoding="utf-8")
 
 
 class _PrefixedEmbedder:

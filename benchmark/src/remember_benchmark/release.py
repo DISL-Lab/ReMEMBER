@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import tempfile
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -21,6 +22,10 @@ WINDOW_KEYS = frozenset({"schema_version", "window_id", "source", "range", "gaps
 GAP_KEYS = frozenset({"gap_idx", "target_sentence_numbers", "gap_type", "evidence"})
 EVIDENCE_KEYS = frozenset({"source_id", "status", "vote_count", "votes", "validation"})
 VOTE_KEYS = frozenset({"gemma", "GLM", "Qwen"})
+WINDOW_ID_PATTERN = re.compile(r"[ELR]_U\d{4}")
+SOURCE_ID_PATTERN = re.compile(r"T\d+-S\d+")
+RANGE_VALUES = ("8k~16k", "16k~32k", "32k~64k", "64k~128k", "128k~160k", "other")
+GAP_TYPES = frozenset({"C", "A", "L"})
 
 
 def _read_ids(path: Path) -> list[str]:
@@ -32,7 +37,7 @@ def _read_ids(path: Path) -> list[str]:
 
 
 def _source_for_window(window_id: Any) -> str:
-    if not isinstance(window_id, str) or "_" not in window_id:
+    if not isinstance(window_id, str) or WINDOW_ID_PATTERN.fullmatch(window_id) is None:
         raise ValueError(f"unknown source prefix for window ID: {window_id!r}")
     prefix = window_id.split("_", 1)[0]
     try:
@@ -156,35 +161,54 @@ def validate_annotations(
             raise ValueError(f"window[{row_index}] has unsupported schema version")
         if row["source"] != _source_for_window(window_id):
             raise ValueError(f"window[{row_index}] source does not match window ID")
-        if not isinstance(row["range"], str):
-            raise ValueError(f"window[{row_index}] has a non-string range")
+        if row["range"] not in RANGE_VALUES:
+            raise ValueError(f"window[{row_index}] has an invalid range")
         if not isinstance(row["gaps"], list):
             raise ValueError(f"invalid gaps at window[{row_index}]")
         row_ids.append(window_id)
+        seen_gap_indices: set[int] = set()
         for gap_index, gap in enumerate(row["gaps"]):
             _require_keys(gap, GAP_KEYS, f"window[{row_index}].gaps[{gap_index}]")
-            if type(gap["gap_idx"]) is not int or not isinstance(gap["gap_type"], str):
-                raise ValueError(f"invalid gap fields at window[{row_index}].gaps[{gap_index}]")
-            if not isinstance(gap["target_sentence_numbers"], list) or not all(
-                type(number) is int for number in gap["target_sentence_numbers"]
+            location = f"window[{row_index}].gaps[{gap_index}]"
+            gap_idx = gap["gap_idx"]
+            if type(gap_idx) is not int or gap_idx < 0:
+                raise ValueError(f"invalid gap_idx at {location}")
+            if gap_idx in seen_gap_indices:
+                raise ValueError(f"duplicate gap_idx at {location}")
+            seen_gap_indices.add(gap_idx)
+            if gap["gap_type"] not in GAP_TYPES:
+                raise ValueError(f"invalid gap_type at {location}")
+            numbers = gap["target_sentence_numbers"]
+            if (not isinstance(numbers, list) or not numbers or not all(
+                type(number) is int and number >= 0 for number in numbers
+            ) or len(numbers) != len(set(numbers)) or numbers != sorted(numbers)
             ):
-                raise ValueError(f"invalid target sentence numbers at window[{row_index}].gaps[{gap_index}]")
+                raise ValueError(f"invalid target sentence numbers at {location}")
             if not isinstance(gap["evidence"], list):
-                raise ValueError(f"invalid evidence at window[{row_index}].gaps[{gap_index}]")
+                raise ValueError(f"invalid evidence at {location}")
             gap_count += 1
+            seen_source_ids: set[str] = set()
             for evidence_index, evidence in enumerate(gap["evidence"]):
                 _require_keys(
                     evidence, EVIDENCE_KEYS, f"window[{row_index}].gaps[{gap_index}].evidence[{evidence_index}]"
                 )
                 _require_keys(evidence["votes"], VOTE_KEYS, "evidence votes")
-                if (
-                    not isinstance(evidence["source_id"], str)
-                    or not isinstance(evidence["status"], str)
+                source_id = evidence["source_id"]
+                if not isinstance(source_id, str) or SOURCE_ID_PATTERN.fullmatch(source_id) is None:
+                    raise ValueError("invalid evidence source_id")
+                if source_id in seen_source_ids:
+                    raise ValueError("duplicate evidence source_id")
+                seen_source_ids.add(source_id)
+                votes = evidence["votes"]
+                if any(type(vote) is not int or vote not in {0, 1} for vote in votes.values()):
+                    raise ValueError("invalid evidence votes")
+                vote_count = sum(votes.values())
+                if (evidence["status"] != "resolve"
                     or type(evidence["vote_count"]) is not int
+                    or evidence["vote_count"] != vote_count
+                    or vote_count < 2
                     or type(evidence["validation"]) is not int
-                    or evidence["validation"] != 1
-                    or not all(type(vote) is int for vote in evidence["votes"].values())
-                ):
+                    or evidence["validation"] != 1):
                     raise ValueError("invalid evidence fields")
                 evidence_count += 1
 
@@ -231,14 +255,15 @@ def _schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": sorted(EVIDENCE_KEYS),
         "properties": {
-            "source_id": {"type": "string"},
-            "status": {"type": "string"},
-            "vote_count": {"type": "integer"},
+            "source_id": {"type": "string", "pattern": "^T[0-9]+-S[0-9]+$"},
+            "status": {"const": "resolve"},
+            "vote_count": {"type": "integer", "minimum": 2, "maximum": 3},
             "votes": {
                 "type": "object",
                 "additionalProperties": False,
                 "required": sorted(VOTE_KEYS),
-                "properties": {name: {"type": "integer"} for name in sorted(VOTE_KEYS)},
+                "properties": {name: {"type": "integer", "enum": [0, 1]}
+                               for name in sorted(VOTE_KEYS)},
             },
             "validation": {"const": 1},
         },
@@ -251,9 +276,9 @@ def _schema() -> dict[str, Any]:
         "required": sorted(WINDOW_KEYS),
         "properties": {
             "schema_version": {"const": SCHEMA_VERSION},
-            "window_id": {"type": "string"},
+            "window_id": {"type": "string", "pattern": "^[ELR]_U[0-9]{4}$"},
             "source": {"enum": sorted(SOURCE_BY_PREFIX.values())},
-            "range": {"type": "string"},
+            "range": {"enum": list(RANGE_VALUES)},
             "gaps": {
                 "type": "array",
                 "items": {
@@ -261,9 +286,12 @@ def _schema() -> dict[str, Any]:
                     "additionalProperties": False,
                     "required": sorted(GAP_KEYS),
                     "properties": {
-                        "gap_idx": {"type": "integer"},
-                        "target_sentence_numbers": {"type": "array", "items": {"type": "integer"}},
-                        "gap_type": {"type": "string"},
+                        "gap_idx": {"type": "integer", "minimum": 0},
+                        "target_sentence_numbers": {
+                            "type": "array", "minItems": 1, "uniqueItems": True,
+                            "items": {"type": "integer", "minimum": 0},
+                        },
+                        "gap_type": {"enum": ["C", "A", "L"]},
                         "evidence": {"type": "array", "items": evidence},
                     },
                 },

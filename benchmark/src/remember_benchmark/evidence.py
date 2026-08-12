@@ -86,6 +86,8 @@ def run_evidence(
             seen_gap_indices.add(gap_idx)
             if gap.get("gap_type") not in {"N", "C", "A", "L"}:
                 raise ValueError(f"{window_id}: invalid gap_type")
+            if gap.get("gap_type") == "N":
+                continue
             copied = dict(gap)
             copied["evidence"] = []
             if gap.get("gap_type") != "N" and allowed_index:

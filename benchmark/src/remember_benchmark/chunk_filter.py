@@ -15,6 +15,7 @@ class TokenCounter(Protocol):
 
 
 class Cl100kCounter:
+    encoding_name = "cl100k_base"
     def __init__(self) -> None:
         self._encoding = None
 

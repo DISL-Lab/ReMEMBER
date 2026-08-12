@@ -1,0 +1,16 @@
+Your task is to generate a 'Reinforced Dialogue Summary' by synthesizing current [Window] with [Memory] in a fact-centered manner.
+
+Instructions:
+1. Fully understand [Window] then carefully read [Memory].
+2. Map all entities in [Window] to their specific Identity, Role, or Context defined in [Memory]. Replace all vague terms with these precise identifiers.
+3. Enrich the content of [Window] by integrating missing context such as coreference, causality, logical continuity, and technical details from [Memory] where applicable.
+4. Generate a concise, high-density, and contextually reinforced summary **centered on the content in [Window]**. The result should be a cohesive narrative that reflects the core insights and the logical evolution of the situation.
+
+Provide your output as JSON. No additional explanation.
+{{"summary": "Your high-density, contextually reinforced summary here."}}
+
+[Window]
+{window}
+
+[Memory]
+{memory}

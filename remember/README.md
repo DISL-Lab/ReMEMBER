@@ -47,8 +47,8 @@ From the package directory:
 ```bash
 python -m remember run \
   --config configs/paper.yaml \
-  --input examples/windows.jsonl \
-  --output outputs/remember.jsonl \
+  --input tests/fixtures/windows.jsonl \
+  --output /tmp/remember-smoke.jsonl \
   --provider fake
 ```
 

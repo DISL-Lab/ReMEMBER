@@ -11,27 +11,42 @@
               "additionalProperties": false,
               "properties": {
                 "source_id": {
+                  "pattern": "^T[0-9]+-S[0-9]+$",
                   "type": "string"
                 },
                 "status": {
-                  "type": "string"
+                  "const": "resolve"
                 },
                 "validation": {
                   "const": 1
                 },
                 "vote_count": {
+                  "maximum": 3,
+                  "minimum": 2,
                   "type": "integer"
                 },
                 "votes": {
                   "additionalProperties": false,
                   "properties": {
                     "GLM": {
+                      "enum": [
+                        0,
+                        1
+                      ],
                       "type": "integer"
                     },
                     "Qwen": {
+                      "enum": [
+                        0,
+                        1
+                      ],
                       "type": "integer"
                     },
                     "gemma": {
+                      "enum": [
+                        0,
+                        1
+                      ],
                       "type": "integer"
                     }
                   },
@@ -55,16 +70,24 @@
             "type": "array"
           },
           "gap_idx": {
+            "minimum": 0,
             "type": "integer"
           },
           "gap_type": {
-            "type": "string"
+            "enum": [
+              "C",
+              "A",
+              "L"
+            ]
           },
           "target_sentence_numbers": {
             "items": {
+              "minimum": 0,
               "type": "integer"
             },
-            "type": "array"
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
           }
         },
         "required": [
@@ -78,7 +101,14 @@
       "type": "array"
     },
     "range": {
-      "type": "string"
+      "enum": [
+        "8k~16k",
+        "16k~32k",
+        "32k~64k",
+        "64k~128k",
+        "128k~160k",
+        "other"
+      ]
     },
     "schema_version": {
       "const": "1.0"
@@ -91,6 +121,7 @@
       ]
     },
     "window_id": {
+      "pattern": "^[ELR]_U[0-9]{4}$",
       "type": "string"
     }
   },

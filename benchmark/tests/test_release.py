@@ -26,10 +26,10 @@ def _keys(value):
 
 
 def test_sanitize_annotations_keeps_only_owned_coordinates():
-    rows = sanitize_annotations(iter_jsonl(FIXTURES / "rcv.jsonl"), ["E_w1"])
+    rows = sanitize_annotations(iter_jsonl(FIXTURES / "rcv.jsonl"), ["E_U0000"])
     assert rows == [{
         "schema_version": "1.0",
-        "window_id": "E_w1",
+        "window_id": "E_U0000",
         "source": "evermembench",
         "range": "8k~16k",
         "gaps": [{
@@ -73,31 +73,31 @@ def test_sanitize_annotations_rejects_unknown_prefix_in_split_before_reading_row
 
 def test_validate_annotations_rejects_duplicate_split_ids():
     with pytest.raises(ValueError, match="duplicate split"):
-        validate_annotations([], ["E_w1", "E_w1"])
+        validate_annotations([], ["E_U0000", "E_U0000"])
 
 
 def test_validate_annotations_rejects_forbidden_nested_key():
     rows = [{
         "schema_version": "1.0",
-        "window_id": "E_w1",
+        "window_id": "E_U0000",
         "source": "evermembench",
         "range": "8k~16k",
         "gaps": [{"gap_idx": 0, "target_sentence_numbers": [1], "gap_type": "A", "evidence": [], "reasoning": "leak"}],
     }]
     with pytest.raises(ValueError, match="forbidden key"):
-        validate_annotations(rows, ["E_w1"])
+        validate_annotations(rows, ["E_U0000"])
 
 
 def test_validate_annotations_rejects_count_mismatch():
-    rows = sanitize_annotations(iter_jsonl(FIXTURES / "rcv.jsonl"), ["E_w1"])
+    rows = sanitize_annotations(iter_jsonl(FIXTURES / "rcv.jsonl"), ["E_U0000"])
     with pytest.raises(ValueError, match="count mismatch"):
-        validate_annotations(rows, ["E_w1"], (2, 1, 1))
+        validate_annotations(rows, ["E_U0000"], (2, 1, 1))
 
 
 def test_validate_annotations_rejects_malformed_required_field_types():
     rows = [{
         "schema_version": "1.0",
-        "window_id": "E_w1",
+        "window_id": "E_U0000",
         "source": "evermembench",
         "range": "8k~16k",
         "gaps": [{
@@ -114,7 +114,7 @@ def test_validate_annotations_rejects_malformed_required_field_types():
         }],
     }]
     with pytest.raises(ValueError, match="invalid"):
-        validate_annotations(rows, ["E_w1"])
+        validate_annotations(rows, ["E_U0000"])
 
 
 def test_cli_rejects_expected_count_mismatch_before_writing_outputs(tmp_path):

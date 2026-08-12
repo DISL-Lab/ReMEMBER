@@ -26,6 +26,10 @@ FORBIDDEN_DATA_KEYS = {
     "reasoning", "raw_output", "speaker", "speakers", "time", "timestamp", "media",
     "media_url", "url", "urls",
 }
+ALLOWED_DATASET_FILES = frozenset({
+    Path("README.md"), Path("DATASET_CARD.md"), Path("schema.json"), Path("metadata.json"),
+    Path("annotations/remember_900_annotations.jsonl"), Path("splits/main_900.txt"),
+})
 
 
 def _sha256(path: Path) -> str:
@@ -38,8 +42,13 @@ def _sha256(path: Path) -> str:
 
 def _walk(root: Path):
     for current, directories, files in os.walk(root):
-        directories[:] = [name for name in directories if name not in IGNORED_DIRS]
         base = Path(current)
+        for name in list(directories):
+            candidate = base / name
+            if candidate.is_symlink():
+                yield candidate
+        directories[:] = [name for name in directories if name not in IGNORED_DIRS]
+        directories[:] = [name for name in directories if not (base / name).is_symlink()]
         for name in files:
             yield base / name
 
@@ -76,6 +85,9 @@ def _layout_scan(root: Path) -> list[str]:
             failures.append(f"tracked forbidden file type: {relative}")
     for path in _walk(root):
         relative = path.relative_to(root)
+        if path.is_symlink():
+            failures.append(f"symlink is forbidden: {relative}")
+            continue
         if any(part in FORBIDDEN_DIRS or part.endswith(".egg-info") for part in relative.parts):
             failures.append(f"forbidden packaged directory: {relative}")
         if path.suffix.lower() in FORBIDDEN_SUFFIXES:
@@ -91,7 +103,16 @@ def _payload_scan(root: Path) -> list[str]:
     dataset = root / "dataset"
     if not dataset.exists():
         return ["missing dataset directory"]
-    for path in sorted(list(dataset.rglob("*.json")) + list(dataset.rglob("*.jsonl"))):
+    payload_files: list[Path] = []
+    for path in _walk(dataset):
+        if path.is_symlink():
+            continue
+        relative = path.relative_to(dataset)
+        if path.is_file() and relative not in ALLOWED_DATASET_FILES:
+            failures.append(f"unknown dataset payload: {relative}")
+        if path.is_file() and path.suffix in {".json", ".jsonl"}:
+            payload_files.append(path)
+    for path in sorted(payload_files):
         try:
             values = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] \
                 if path.suffix == ".jsonl" else [json.loads(path.read_text(encoding="utf-8"))]
@@ -110,52 +131,78 @@ def _source_scan(root: Path) -> list[str]:
     research_names = ("0-" + "dataset", "1-" + "research", "2-" + "rebuttal")
     credential_prefixes = ("s" + "k-", "h" + "f_")
     fixed_gpu = re.compile(r"CUDA_VISIBLE_DEVICES\s*=\s*[\"']?\d")
-    absolute = re.compile(r"(?:/" + "data/|/" + "home/|/" + "Users/)")
+    absolute = re.compile(
+        r"(?:(?<=^)|(?<=[\s\"'=]))/(?!proc/self/fd(?:/|$)|dev/null(?:$|\s))[A-Za-z0-9._-]+/"
+        r"|(?:(?<=^)|(?<=[\s\"'=]))[A-Za-z]:[\\/]",
+        re.MULTILINE,
+    )
     secret_words = "api[_-]?" + "key|" + "token|" + "secret|" + "password"
-    secret_assignment = re.compile(r"(?i)(?:" + secret_words + r")\s*=\s*[\"'][^\"']{6,}")
-    allowed_suffixes = {".py", ".yaml", ".yml", ".txt", ".md"}
+    python_secret = re.compile(
+        r"(?im)\b(?:" + secret_words + r")\b\s*=\s*([\"'])(.{6,}?)\1"
+    )
+    yaml_secret = re.compile(
+        r"(?im)^\s*(?:" + secret_words + r")\s*:\s*(?:[\"'])?([^\s\"'#]{6,})"
+    )
     for path in _walk(root):
         relative = path.relative_to(root)
-        if relative.parts[:2] == ("docs", "plans") or path.suffix.lower() not in allowed_suffixes:
-            continue
-        if path.suffix.lower() == ".md" and path.name != "README.md":
+        if path.is_symlink() or not path.is_file():
             continue
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             failures.append(f"non-UTF8 source asset: {relative}")
             continue
-        if absolute.search(text): failures.append(f"machine-local absolute path: {relative}")
-        if fixed_gpu.search(text): failures.append(f"fixed GPU assignment: {relative}")
-        if "no" + "hup" in text: failures.append(f"detached runtime command: {relative}")
-        if any(prefix in text for prefix in credential_prefixes) or secret_assignment.search(text):
+        intentional_tmp_output = "/" + "tmp/remember-smoke.jsonl"
+        scan_text = re.sub(
+            re.escape(intentional_tmp_output) + r"(?=$|[\s\"'`\\])", "", text
+        ).replace("/proc/self/fd", "")
+        if absolute.search(scan_text): failures.append(f"machine-local absolute path: {relative}")
+        is_plan = relative.parts[:2] == ("docs", "plans")
+        if not is_plan and fixed_gpu.search(text): failures.append(f"fixed GPU assignment: {relative}")
+        if not is_plan and "no" + "hup" in text: failures.append(f"detached runtime command: {relative}")
+        safe_env_name = re.compile(r"[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|SECRET|PASSWORD)")
+        unsafe_python_secret = any(
+            not safe_env_name.fullmatch(match.group(2)) for match in python_secret.finditer(text)
+        )
+        unsafe_yaml_secret = any(
+            not safe_env_name.fullmatch(match.group(1)) for match in yaml_secret.finditer(text)
+        )
+        if not is_plan and (any(prefix in text for prefix in credential_prefixes)
+                or unsafe_python_secret or unsafe_yaml_secret):
             failures.append(f"credential literal/assignment: {relative}")
-        if any(name in text for name in research_names):
+        if not is_plan and any(name in text for name in research_names):
             failures.append(f"research-tree runtime reference: {relative}")
         fallback_pattern = r"(?i)(?:" + "key|" + "secret|" + "token" + r")[_-]?file"
-        if re.search(fallback_pattern, text):
+        if not is_plan and re.search(fallback_pattern, text):
             failures.append(f"{'secret' + '-file'} fallback: {relative}")
     return failures
 
 
 def _dataset_summary(root: Path) -> dict[str, Any]:
+    benchmark_src = str(ROOT / "benchmark/src")
+    if benchmark_src not in sys.path:
+        sys.path.insert(0, benchmark_src)
+    from remember_benchmark.release import validate_annotations
+
     annotation = root / "dataset/annotations/remember_900_annotations.jsonl"
     schema = root / "dataset/schema.json"
     metadata = root / "dataset/metadata.json"
     split = root / "dataset/splits/main_900.txt"
+    for path in (annotation, schema, metadata, split):
+        if path.is_symlink():
+            raise ValueError(f"dataset artifact must not be a symlink: {path.relative_to(root)}")
     rows = [json.loads(line) for line in annotation.read_text(encoding="utf-8").splitlines() if line.strip()]
     split_ids = [line.strip() for line in split.read_text(encoding="utf-8").splitlines()]
     row_ids = [row["window_id"] for row in rows]
     if len(split_ids) != len(set(split_ids)) or row_ids != split_ids:
         raise ValueError("dataset split IDs must be unique and exactly match annotation order")
+    counts = validate_annotations(rows, split_ids)
     metadata_value = json.loads(metadata.read_text(encoding="utf-8"))
     artifact_paths = {"annotations": annotation, "schema": schema, "split": split}
     for name, path in artifact_paths.items():
         recorded = metadata_value.get("artifacts", {}).get(name, {})
         if recorded.get("sha256") != _sha256(path):
             raise ValueError(f"dataset metadata hash mismatch: {name}")
-    counts = {"windows": len(rows), "gaps": sum(len(row["gaps"]) for row in rows),
-              "evidence": sum(len(gap["evidence"]) for row in rows for gap in row["gaps"])}
     if metadata_value.get("counts") != counts:
         raise ValueError("dataset metadata counts do not match recomputed counts")
     return {"counts": counts, "hashes": {"annotations": _sha256(annotation), "schema": _sha256(schema),
@@ -229,9 +276,9 @@ def main() -> int:
     summary = scan_release(ROOT)
     compile_result = _compile()
     tests = {
-        "benchmark": _run([sys.executable, "-m", "pytest", "-q", "benchmark/tests"],
+        "benchmark": _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "benchmark/tests"],
                           env={"PYTHONPATH": str(ROOT / "benchmark/src")}),
-        "remember": _run([sys.executable, "-m", "pytest", "-q", "remember/tests"],
+        "remember": _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "remember/tests"],
                          env={"PYTHONPATH": str(ROOT / "remember/src")}),
     }
     with tempfile.TemporaryDirectory(prefix="remember-release-validation-") as directory:

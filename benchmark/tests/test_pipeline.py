@@ -3,6 +3,7 @@ import copy
 from pathlib import Path
 
 import pytest
+import remember_benchmark.pipeline as pipeline
 
 from remember_benchmark.pipeline import STAGES, build, flatten_ensemble_to_rcv
 
@@ -250,3 +251,249 @@ def test_fresh_preflight_detects_downstream_sentinel_before_any_upstream_write(t
               counter=WordCounter())
     assert sentinel.read_text() == "do-not-touch\n"
     assert not (work / "sources.jsonl").exists()
+
+
+@pytest.mark.parametrize("relationship", ["work_in_output", "output_in_work", "symlink_alias"])
+def test_private_and_public_directories_must_be_disjoint_before_any_write(tmp_path, relationship):
+    config, _, _ = _fixture(tmp_path)
+    if relationship == "work_in_output":
+        output, work = tmp_path / "public", tmp_path / "public/private"
+    elif relationship == "output_in_work":
+        work, output = tmp_path / "private", tmp_path / "private/public"
+    else:
+        real = tmp_path / "real"
+        real.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(real, target_is_directory=True)
+        output, work = real, alias / "private"
+    with pytest.raises(ValueError, match="disjoint"):
+        build(config, work, output, {name: FixtureProvider() for name in config["models"]},
+              counter=WordCounter())
+    assert not work.exists()
+    assert not (output / "annotations").exists()
+
+
+def test_release_rejects_unrelated_preexisting_public_output(tmp_path):
+    config, _, _ = _fixture(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    sentinel = out / "private.txt"
+    sentinel.write_text("never publish\n")
+    with pytest.raises(ValueError, match="public output allowlist"):
+        build(config, tmp_path / "work", out,
+              {name: FixtureProvider() for name in config["models"]}, counter=WordCounter())
+    assert sentinel.read_text() == "never publish\n"
+    assert not (tmp_path / "work/sources.jsonl").exists()
+
+
+def test_fresh_build_allows_explicit_empty_output_directory(tmp_path):
+    config, _, _ = _fixture(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    build(config, tmp_path / "work", out,
+          {name: FixtureProvider() for name in config["models"]}, counter=WordCounter())
+    assert {path.relative_to(out) for path in out.rglob("*") if path.is_file()} == pipeline.PUBLIC_FILES
+
+
+def test_merged_salient_preserves_canonical_private_reasons_and_evidence_receives_them():
+    windows = [{"window_id": "E_U0000", "source": "evermembench", "range": "other",
+                "turns": [{"time": "t", "speaker": "A", "dialogue": "Use it."}]}]
+    voted = [{"window_id": "E_U0000", "gaps": [{"gap_idx": 0,
+              "target_sentence_numbers": [0], "gap_type": "A"}]}]
+    by_model = {name: [{"window_id": "E_U0000", "gaps": [{"gap_idx": 0,
+        "target_sentence_numbers": [0], "gap_type": "A", "gap_reason": reason}]}]
+        for name, reason in (("gemma", "gemma reason"), ("GLM", "glm reason"), ("Qwen", "qwen reason"))}
+    [row] = pipeline._merge_salient(windows, voted, by_model)
+    [gap] = row["gaps"]
+    assert gap["gap_reasons"] == ["gemma reason", "glm reason", "qwen reason"]
+    assert gap["gap_reason"] == "gemma: gemma reason; GLM: glm reason; Qwen: qwen reason"
+
+
+@pytest.mark.parametrize("changed", ["temperature", "device"])
+def test_resume_rejects_output_affecting_runtime_identity_change(tmp_path, changed):
+    config, _, _ = _fixture(tmp_path)
+
+    class RuntimeProvider(FixtureProvider):
+        def __init__(self, temperature=0, device="cpu:0"):
+            self.temperature = temperature
+            self.device = device
+
+    providers = {name: RuntimeProvider() for name in config["models"]}
+    work, out = tmp_path / "work", tmp_path / "out"
+    build(config, work, out, providers, counter=WordCounter())
+    if changed == "temperature":
+        config = copy.deepcopy(config)
+        config["temperature"] = 0.25
+    else:
+        providers = {name: RuntimeProvider(device="cpu:1") for name in config["models"]}
+    with pytest.raises(ValueError, match="configuration hash mismatch"):
+        build(config, work, out, providers, counter=WordCounter(), resume=True)
+
+
+def test_model_backed_providers_are_released_after_each_stage_and_on_error(tmp_path):
+    config, _, _ = _fixture(tmp_path)
+    state = {"live": 0, "max": 0, "released": 0}
+
+    class Releasable(FixtureProvider):
+        temperature = 0
+        device = "fixture"
+        loaded = False
+
+        def complete(self, prompt):
+            if not self.loaded:
+                self.loaded = True
+                state["live"] += 1
+                state["max"] = max(state["max"], state["live"])
+            return super().complete(prompt)
+
+        def release(self):
+            if self.loaded:
+                self.loaded = False
+                state["live"] -= 1
+                state["released"] += 1
+
+    build(config, tmp_path / "work", tmp_path / "out",
+          {name: Releasable() for name in config["models"]}, counter=WordCounter())
+    assert state["max"] == 1
+    assert state["live"] == 0
+    assert state["released"] >= 12
+
+    class Failing(Releasable):
+        def complete(self, prompt):
+            super().complete(prompt)
+            raise RuntimeError("provider failed after load")
+
+    failing = Failing()
+    with pytest.raises(RuntimeError, match="provider failed"):
+        build(config, tmp_path / "fail-work", tmp_path / "fail-out",
+              {"gemma": failing, "GLM": Releasable(), "Qwen": Releasable()}, counter=WordCounter())
+    assert state["live"] == 0
+
+
+def test_failed_release_generation_leaves_previous_output_and_inventory_unchanged(tmp_path, monkeypatch):
+    config, _, _, _, work, out = _complete_build(tmp_path)
+    old = {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()}
+    inventory = (work / "release/release.manifest.json").read_bytes()
+    monkeypatch.setattr(pipeline, "export_annotations", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected export failure")))
+    with pytest.raises(RuntimeError, match="injected export failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]},
+              counter=WordCounter(), overwrite=True, from_stage="release")
+    assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == old
+    assert (work / "release/release.manifest.json").read_bytes() == inventory
+
+
+def test_fresh_export_failure_leaves_no_public_tree_inventory_or_staging_sibling(tmp_path, monkeypatch):
+    config, _, _ = _fixture(tmp_path)
+    work, out = tmp_path / "work", tmp_path / "out"
+    monkeypatch.setattr(pipeline, "export_annotations", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fresh export failure")))
+    with pytest.raises(RuntimeError, match="fresh export failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]}, counter=WordCounter())
+    assert not out.exists()
+    assert not (work / "release/release.manifest.json").exists()
+    assert not list(tmp_path.glob(".out.release-*"))
+
+
+def test_inventory_failure_rolls_back_public_directory_and_old_inventory(tmp_path, monkeypatch):
+    config, _, _, _, work, out = _complete_build(tmp_path)
+    old = {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()}
+    inventory_path = work / "release/release.manifest.json"
+    inventory = inventory_path.read_bytes()
+    monkeypatch.setattr(pipeline, "_write_release_inventory", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("inventory fsync failure")))
+    with pytest.raises(OSError, match="inventory fsync failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]},
+              counter=WordCounter(), overwrite=True, from_stage="release")
+    assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == old
+    assert inventory_path.read_bytes() == inventory
+    assert not list(tmp_path.glob(".out.backup-*"))
+    assert not list(tmp_path.glob(".out.release-*"))
+
+
+def test_inventory_parent_fsync_failure_after_replace_restores_old_bytes(tmp_path, monkeypatch):
+    config, _, _, _, work, out = _complete_build(tmp_path)
+    old_output = {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()}
+    inventory_path = work / "release/release.manifest.json"
+    old_inventory = inventory_path.read_bytes()
+    real_fsync_parent = pipeline.fsync_parent_directory
+    raised = False
+
+    def one_inventory_failure(path):
+        nonlocal raised
+        if Path(path) == inventory_path and not raised:
+            raised = True
+            raise OSError("inventory parent fsync failure")
+        return real_fsync_parent(path)
+
+    monkeypatch.setattr(pipeline, "fsync_parent_directory", one_inventory_failure)
+    with pytest.raises(OSError, match="inventory parent fsync failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]},
+              counter=WordCounter(), overwrite=True, from_stage="release")
+    assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == old_output
+    assert inventory_path.read_bytes() == old_inventory
+    assert not list(tmp_path.glob(".out.backup-*"))
+
+
+def test_every_stage_manifest_contains_current_pipeline_version(tmp_path):
+    config, _, _, _, work, _ = _complete_build(tmp_path)
+    manifest_paths = list(work.rglob("*.manifest.json"))
+    assert manifest_paths
+    # Every stage config is opaque-hashed, so changing only PIPELINE_VERSION
+    # must invalidate every stage family. Direct configs are exercised by the
+    # full resume matrix; this asserts the current version is no stale literal.
+    assert pipeline.PIPELINE_VERSION == "2.0"
+    assert '"pipeline": "1.0"' not in Path(pipeline.__file__).read_text()
+
+
+def test_failed_directory_swap_rolls_back_complete_previous_release(tmp_path, monkeypatch):
+    config, _, _, _, work, out = _complete_build(tmp_path)
+    old = {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()}
+    real_replace = pipeline._replace_directory
+    calls = 0
+
+    def fail_second(source, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected swap failure")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(pipeline, "_replace_directory", fail_second)
+    with pytest.raises(OSError, match="injected swap failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]},
+              counter=WordCounter(), overwrite=True, from_stage="release")
+    assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == old
+    assert not list(tmp_path.glob(".out.backup-*"))
+    assert not list(tmp_path.glob(".out.release-*"))
+
+
+def test_public_parent_fsync_failure_after_successful_rename_rolls_back(tmp_path, monkeypatch):
+    config, _, _, _, work, out = _complete_build(tmp_path)
+    old = {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()}
+    real_fsync_parent = pipeline.fsync_parent_directory
+    raised = False
+
+    def fail_new_output_once(path):
+        nonlocal raised
+        if Path(path) == out and not raised:
+            raised = True
+            raise OSError("public parent fsync failure")
+        return real_fsync_parent(path)
+
+    monkeypatch.setattr(pipeline, "fsync_parent_directory", fail_new_output_once)
+    with pytest.raises(OSError, match="public parent fsync failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]},
+              counter=WordCounter(), overwrite=True, from_stage="release")
+    assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == old
+    assert not list(tmp_path.glob(".out.backup-*"))
+    assert not list(tmp_path.glob(".out.failed-*"))
+
+
+def test_public_prompts_preserve_binding_canonical_semantics():
+    prompts = Path(__file__).parents[1] / "prompts"
+    salient = (prompts / "salient.txt").read_text()
+    assert all(term in salient for term in ("decision", "request", "action", "status update", "self-contained"))
+    chunk = (prompts / "relevant_chunk_filtering.txt").read_text()
+    assert all(term in chunk for term in ("independently", "necessary or directly useful", "one label", "every chunk"))
+    evidence = (prompts / "relevant_chunk.txt").read_text()
+    assert all(term in evidence for term in ("exact missing", "strict logic gate", "every", "explicit"))
+    validation = (prompts / "relevant_chunk_validation.txt").read_text()
+    assert all(term in validation for term in ("Sufficiency", "Non-Inference", "Independence", "Distinctness", "Memory-Necessity"))

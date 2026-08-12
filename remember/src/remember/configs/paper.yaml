@@ -1,0 +1,15 @@
+gap_model: Qwen/Qwen3.5-4B
+summary_model: Qwen/Qwen3.5-4B
+dense_model: Qwen/Qwen3-Embedding-0.6B
+max_gaps: 8
+chunk_tokens: 128
+overlap_tokens: 32
+memory_budget_tokens: 1024
+top_k: 8
+rrf_k: 60
+gap_temperature: 0.0
+gap_max_tokens: 768
+summary_temperature: 0.7
+summary_max_tokens: 768
+token_encoding: cl100k_base
+dense_query_prefix: "Instruct: Given a current-window utterance with missing dialogue context, retrieve earlier dialogue that directly supports a faithful memory item.\nQuery: "

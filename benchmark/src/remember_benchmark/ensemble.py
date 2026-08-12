@@ -134,6 +134,8 @@ def ensemble_votes(
                 gap_idx = gap.get("gap_idx")
                 if not isinstance(gap_idx, int):
                     raise ValueError(f"{window_id}: gap_idx must be an integer")
+                if gap.get("gap_type") == "N":
+                    continue
                 clean = {
                     "gap_idx": gap_idx,
                     "target_sentence_numbers": list(gap.get("target_sentence_numbers", [])),

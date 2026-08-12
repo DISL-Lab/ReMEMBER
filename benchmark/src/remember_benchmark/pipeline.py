@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import shutil
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +28,7 @@ from .windows import build_windows
 
 STAGES = ("sources", "windows", "salient", "chunk_filter", "evidence", "validation", "ensemble", "release")
 MODEL_ORDER = ("gemma", "GLM", "Qwen")
+PIPELINE_VERSION = "2.0"
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,142 @@ def _provider_identity(provider: object, label: str, model_id: str) -> dict[str,
         "adapter": f"{type(provider).__module__}.{type(provider).__qualname__}",
         "base_url": getattr(provider, "base_url", None),
         "api_key_env": getattr(provider, "api_key_env", None),
+        "device": getattr(provider, "device", None),
+        "temperature": getattr(provider, "temperature", None),
     }
+
+
+def _release_provider(provider: object) -> None:
+    release = getattr(provider, "release", None)
+    if callable(release):
+        release()
+
+
+def _run_and_release(call, provider: object):
+    try:
+        return call()
+    finally:
+        _release_provider(provider)
+
+
+def _resolved(path: Path) -> Path:
+    return Path(path).resolve(strict=False)
+
+
+def _validate_disjoint_paths(work_dir: Path, output_dir: Path) -> None:
+    work, output = _resolved(work_dir), _resolved(output_dir)
+    if work == output or work in output.parents or output in work.parents:
+        raise ValueError("work-dir and output-dir must be fully disjoint (no equality or ancestry)")
+
+
+PUBLIC_FILES = frozenset({
+    Path("annotations/remember_900_annotations.jsonl"), Path("schema.json"),
+    Path("metadata.json"), Path("splits/main_900.txt"),
+})
+PUBLIC_DIRS = frozenset({Path("annotations"), Path("splits")})
+
+
+def _validate_public_tree(path: Path, *, allow_absent: bool = True) -> None:
+    path = Path(path)
+    if not path.exists():
+        if allow_absent:
+            return
+        raise ValueError(f"public output is missing: {path}")
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"public output allowlist violation: {path}")
+    for child in path.rglob("*"):
+        relative = child.relative_to(path)
+        if child.is_symlink() or (child.is_dir() and relative not in PUBLIC_DIRS) or (child.is_file() and relative not in PUBLIC_FILES):
+            raise ValueError(f"public output allowlist violation: {relative}")
+
+
+def _replace_directory(source: Path, target: Path) -> None:
+    os.replace(source, target)
+    fsync_parent_directory(target)
+
+
+def _publish_release_directory(staged: Path, output: Path, *, overwrite: bool) -> Path | None:
+    parent = output.parent
+    backup = parent / f".{output.name}.backup-{uuid.uuid4().hex}"
+    moved_old = False
+    published = False
+    try:
+        if output.exists():
+            if not overwrite:
+                if any(output.iterdir()):
+                    raise FileExistsError(f"{output} exists; use --resume or --overwrite")
+                output.rmdir()
+            else:
+                _replace_directory(output, backup)
+                moved_old = True
+        try:
+            _replace_directory(staged, output)
+            published = True
+        except BaseException:
+            if moved_old and backup.exists():
+                if output.exists():
+                    failed = parent / f".{output.name}.failed-{uuid.uuid4().hex}"
+                    os.replace(output, failed)
+                    shutil.rmtree(failed)
+                _replace_directory(backup, output)
+                moved_old = False
+            elif output.exists():
+                shutil.rmtree(output)
+                fsync_parent_directory(output)
+            raise
+        return backup if moved_old else None
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged)
+        if not published and backup.exists() and not output.exists():
+            _replace_directory(backup, output)
+
+
+def _commit_release_transaction(staged: Path, output: Path, *, overwrite: bool,
+                                write_inventory, inventory_path: Path) -> None:
+    old_inventory = inventory_path.read_bytes() if inventory_path.is_file() else None
+    backup = _publish_release_directory(staged, output, overwrite=overwrite)
+    try:
+        write_inventory()
+    except BaseException:
+        if backup is not None and backup.exists():
+            failed = output.parent / f".{output.name}.failed-{uuid.uuid4().hex}"
+            if output.exists():
+                os.replace(output, failed)
+            _replace_directory(backup, output)
+            if failed.exists():
+                shutil.rmtree(failed)
+        elif output.exists():
+            shutil.rmtree(output)
+            fsync_parent_directory(output)
+        if old_inventory is None:
+            inventory_path.unlink(missing_ok=True)
+            if inventory_path.parent.exists():
+                fsync_parent_directory(inventory_path)
+        else:
+            _atomic_bytes(inventory_path, old_inventory)
+        raise
+    if backup is not None and backup.exists():
+        shutil.rmtree(backup)
+        fsync_parent_directory(output)
+
+
+def _atomic_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.",
+                                         suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        fsync_parent_directory(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _mode_for(stage_index: int, start: int, *, resume: bool, overwrite: bool) -> str:
@@ -77,18 +215,24 @@ def _mode_for(stage_index: int, start: int, *, resume: bool, overwrite: bool) ->
     return "resume" if resume else "write"
 
 
+def _versioned_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind every stage manifest to pipeline code semantics."""
+    return {**dict(config), "pipeline": PIPELINE_VERSION}
+
+
 def _materialize(path: Path, rows: Sequence[dict[str, Any]] | None, *, stage: str, prompt: str,
                  inputs: Sequence[Path], config: Mapping[str, Any], mode: str) -> list[dict[str, Any]]:
     manifest = manifest_path_for(path)
+    manifest_config = _versioned_config(config)
     if mode == "resume":
-        verify_resume(manifest, prompt=prompt, inputs=inputs, config=config,
+        verify_resume(manifest, prompt=prompt, inputs=inputs, config=manifest_config,
                       expected_stage=stage, output_path=path)
         return _rows(path)
     if mode == "write" and (path.exists() or manifest.exists()):
         raise FileExistsError(f"{path} exists; use --resume or --overwrite")
     if rows is None:
         raise ValueError(f"{stage}: rows are required for materialization")
-    publish_stage(path, rows, stage=stage, prompt=prompt, inputs=inputs, config=config)
+    publish_stage(path, rows, stage=stage, prompt=prompt, inputs=inputs, config=manifest_config)
     return list(rows)
 
 
@@ -169,17 +313,27 @@ def _prompt(config: Mapping[str, Any], name: str) -> tuple[str, Path]:
         raise ValueError(f"unable to read {name} prompt at {path}") from exc
 
 
-def _merge_salient(windows: Sequence[dict[str, Any]], voted: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_salient(windows: Sequence[dict[str, Any]], voted: Sequence[dict[str, Any]],
+                    rows_by_model: Mapping[str, Sequence[dict[str, Any]]]) -> list[dict[str, Any]]:
     window_map = {row["window_id"]: row for row in windows}
     output: list[dict[str, Any]] = []
+    indexed = {model: {row["window_id"]: row for row in rows_by_model[model]} for model in MODEL_ORDER}
     for row in voted:
         window = window_map[row["window_id"]]
         expanded = expand_window_sentences(window["turns"])
         gaps = []
         for gap in row["gaps"]:
             numbers = gap["target_sentence_numbers"]
+            reasons: list[tuple[str, str]] = []
+            for model in MODEL_ORDER:
+                for candidate in indexed[model][row["window_id"]].get("gaps", []):
+                    if candidate.get("target_sentence_numbers") == numbers:
+                        reason = candidate.get("gap_reason")
+                        if isinstance(reason, str) and reason.strip():
+                            reasons.append((model, reason.strip()))
+            rendered_reason = "; ".join(f"{model}: {reason}" for model, reason in reasons)
             gaps.append({**gap, "target_sentence": [expanded[index]["sentence"] for index in numbers],
-                         "gap_reason": ""})
+                         "gap_reasons": [reason for _, reason in reasons], "gap_reason": rendered_reason})
         output.append({**row, "source": window["source"], "range": window["range"], "gaps": gaps})
     return output
 
@@ -244,6 +398,21 @@ def _write_release_inventory(work_dir: Path, output_dir: Path, split_path: Path,
     _atomic_text(_release_inventory_path(work_dir), canonical_json(payload) + "\n")
 
 
+def _build_staged_release(staged: Path, private_path: Path, split_path: Path,
+                          split_ids: Sequence[str], expected: tuple[int, int, int]) -> None:
+    staged_split = staged / "splits/main_900.txt"
+    _atomic_text(staged_split, split_path.read_text(encoding="utf-8"))
+    annotation = staged / "annotations/remember_900_annotations.jsonl"
+    export_annotations(private_path, staged_split, annotation, staged / "metadata.json", staged / "schema.json")
+    validate_annotations(_rows(annotation), split_ids, expected)
+    _validate_public_tree(staged, allow_absent=False)
+    metadata = json.loads((staged / "metadata.json").read_text(encoding="utf-8"))
+    for name, relative in (("annotations", "annotations/remember_900_annotations.jsonl"),
+                           ("schema", "schema.json"), ("split", "splits/main_900.txt")):
+        if metadata.get("artifacts", {}).get(name, {}).get("sha256") != sha256_file(staged / relative):
+            raise ValueError(f"staged release metadata hash mismatch: {name}")
+
+
 def _verify_release(work_dir: Path, output_dir: Path, split_path: Path, expected: tuple[int, int, int],
                     *, inputs: Sequence[Path], config: Mapping[str, Any]) -> None:
     annotation = output_dir / "annotations/remember_900_annotations.jsonl"
@@ -288,6 +457,9 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     """Run the exact eight-stage builder; private text stays in ``work_dir``."""
     if resume and overwrite:
         raise ValueError("--resume and --overwrite are mutually exclusive")
+    temperature = config.get("temperature", 0)
+    if isinstance(temperature, bool) or not isinstance(temperature, (int, float)) or temperature < 0:
+        raise ValueError("temperature must be a non-negative number")
     start_name, end_name = from_stage or STAGES[0], to_stage or STAGES[-1]
     if start_name not in STAGES or end_name not in STAGES:
         raise ValueError(f"stage must be one of {', '.join(STAGES)}")
@@ -295,8 +467,9 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     if start > end:
         raise ValueError("from-stage/to-stage order is invalid")
     work_dir, output_dir = Path(work_dir), Path(output_dir)
-    if work_dir.resolve() == output_dir.resolve():
-        raise ValueError("work-dir and output-dir must be different explicit directories")
+    _validate_disjoint_paths(work_dir, output_dir)
+    if end == STAGES.index("release"):
+        _validate_public_tree(output_dir)
     if not resume and not overwrite:
         _preflight_fresh_range(work_dir, output_dir, start, end)
     model_ids, providers = _model_map(config, provider)
@@ -313,7 +486,7 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     source_path = work_dir / "sources.jsonl"
     source_rows = None if mode == "resume" else [item.to_dict() for item in _normalize(source_config)]
     _materialize(source_path, source_rows, stage="sources", prompt="", inputs=source_inputs,
-                                       config={"pipeline": "1.0", "sources": global_config["sources"]}, mode=mode)
+                                       config={"pipeline": PIPELINE_VERSION, "sources": global_config["sources"]}, mode=mode)
     dialogues = _normalized_rows(source_path)
     if end == 0:
         return BuildResult(list(STAGES[start:end + 1]), work_dir, output_dir)
@@ -327,10 +500,12 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     mode = _mode_for(1, start, resume=resume, overwrite=overwrite)
     windows_path = work_dir / "windows.jsonl"
     actual_counter = counter or Cl100kCounter()
+    counter_identity = {"adapter": f"{type(actual_counter).__module__}.{type(actual_counter).__qualname__}",
+                        "encoding": getattr(actual_counter, "encoding_name", "cl100k_base" if isinstance(actual_counter, Cl100kCounter) else None)}
     generated_windows = None if mode == "resume" else build_windows(dialogues, actual_counter, configs=window_configs)
     windows = _materialize(windows_path, generated_windows, stage="windows", prompt="", inputs=[source_path],
-                           config={"pipeline": "1.0", "windowing": _jsonable(windowing),
-                                   "counter": type(actual_counter).__name__}, mode=mode)
+                           config={"pipeline": PIPELINE_VERSION, "windowing": _jsonable(windowing),
+                                   "counter": counter_identity}, mode=mode)
     if end == 1:
         return BuildResult(list(STAGES[start:end + 1]), work_dir, output_dir)
 
@@ -341,15 +516,17 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     salient_paths: list[Path] = []
     for label in MODEL_ORDER:
         path = work_dir / "salient" / f"{label}.jsonl"; salient_paths.append(path)
-        rows = None if mode == "resume" else run_salient(windows, providers[label], salient_prompt)
+        rows = None if mode == "resume" else _run_and_release(
+            lambda label=label: run_salient(windows, providers[label], salient_prompt), providers[label])
         salient_by_model[label] = _materialize(path, rows, stage=f"salient/{label}", prompt=salient_prompt,
-            inputs=[windows_path, salient_prompt_path], config={"pipeline": "1.0", "threshold": threshold.get("salient"),
-            "provider": _provider_identity(providers[label], label, model_ids[label])}, mode=mode)
+            inputs=[windows_path, salient_prompt_path], config={"pipeline": PIPELINE_VERSION, "threshold": threshold.get("salient"),
+            "provider": _provider_identity(providers[label], label, model_ids[label]),
+            "temperature": config.get("temperature", 0)}, mode=mode)
     merged_salient_path = work_dir / "salient" / "ensemble.jsonl"
     merged_rows = None if mode == "resume" else _merge_salient(windows, ensemble_salient_votes(
-        salient_by_model, int(threshold.get("salient", 3))))
+        salient_by_model, int(threshold.get("salient", 3))), salient_by_model)
     merged_salient = _materialize(merged_salient_path, merged_rows, stage="salient/ensemble", prompt="",
-        inputs=salient_paths, config={"pipeline": "1.0", "threshold": threshold.get("salient")}, mode=mode)
+        inputs=salient_paths, config={"pipeline": PIPELINE_VERSION, "threshold": threshold.get("salient")}, mode=mode)
     if end == 2: return BuildResult(list(STAGES[start:end + 1]), work_dir, output_dir)
 
     # chunk filtering and ensemble
@@ -359,17 +536,18 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     chunks_by_model: dict[str, list[dict[str, Any]]] = {}; chunk_paths: list[Path] = []
     for label in MODEL_ORDER:
         path = work_dir / "chunk_filter" / f"{label}.jsonl"; chunk_paths.append(path)
-        rows = None if mode == "resume" else run_chunk_filter(windows, providers[label], chunk_prompt,
-            counter=actual_counter, chunk_tokens=int(chunking.get("tokens", 128)),
-            overlap_tokens=int(chunking.get("overlap_tokens", 32)),
-            chunks_per_group=int(chunking.get("chunks_per_group", 16)))
+        rows = None if mode == "resume" else _run_and_release(lambda label=label: run_chunk_filter(
+            windows, providers[label], chunk_prompt, counter=actual_counter,
+            chunk_tokens=int(chunking.get("tokens", 128)), overlap_tokens=int(chunking.get("overlap_tokens", 32)),
+            chunks_per_group=int(chunking.get("chunks_per_group", 16))), providers[label])
         chunks_by_model[label] = _materialize(path, rows, stage=f"chunk_filter/{label}", prompt=chunk_prompt,
-            inputs=[windows_path, chunk_prompt_path], config={"pipeline": "1.0", "chunking": _jsonable(chunking),
-            "provider": _provider_identity(providers[label], label, model_ids[label])}, mode=mode)
+            inputs=[windows_path, chunk_prompt_path], config={"pipeline": PIPELINE_VERSION, "chunking": _jsonable(chunking),
+            "provider": _provider_identity(providers[label], label, model_ids[label]), "counter": counter_identity,
+            "temperature": config.get("temperature", 0)}, mode=mode)
     merged_chunks_path = work_dir / "chunk_filter" / "ensemble.jsonl"
     merged_chunk_rows = None if mode == "resume" else ensemble_chunk_votes(chunks_by_model, int(threshold.get("chunk_filter", 3)))
     merged_chunks = _materialize(merged_chunks_path, merged_chunk_rows, stage="chunk_filter/ensemble", prompt="",
-        inputs=chunk_paths, config={"pipeline": "1.0", "threshold": threshold.get("chunk_filter")}, mode=mode)
+        inputs=chunk_paths, config={"pipeline": PIPELINE_VERSION, "threshold": threshold.get("chunk_filter")}, mode=mode)
     if end == 3: return BuildResult(list(STAGES[start:end + 1]), work_dir, output_dir)
 
     evidence_prompt, evidence_prompt_path = _prompt(config, "evidence")
@@ -377,11 +555,12 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     evidence_by_model: dict[str, list[dict[str, Any]]] = {}; evidence_paths: list[Path] = []
     for label in MODEL_ORDER:
         path = work_dir / "evidence" / f"{label}.jsonl"; evidence_paths.append(path)
-        rows = None if mode == "resume" else run_evidence(windows, merged_salient, merged_chunks,
-                                                           providers[label], evidence_prompt)
+        rows = None if mode == "resume" else _run_and_release(lambda label=label: run_evidence(
+            windows, merged_salient, merged_chunks, providers[label], evidence_prompt), providers[label])
         evidence_by_model[label] = _materialize(path, rows, stage=f"evidence/{label}", prompt=evidence_prompt,
             inputs=[windows_path, merged_salient_path, merged_chunks_path, evidence_prompt_path],
-            config={"pipeline": "1.0", "provider": _provider_identity(providers[label], label, model_ids[label])}, mode=mode)
+            config={"pipeline": PIPELINE_VERSION, "provider": _provider_identity(providers[label], label, model_ids[label]),
+                    "temperature": config.get("temperature", 0)}, mode=mode)
     if end == 4: return BuildResult(list(STAGES[start:end + 1]), work_dir, output_dir)
 
     validation_prompt, validation_prompt_path = _prompt(config, "validation")
@@ -389,18 +568,19 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     validated_by_model: dict[str, list[dict[str, Any]]] = {}; validation_paths: list[Path] = []
     for label in MODEL_ORDER:
         path = work_dir / "validation" / f"{label}.jsonl"; validation_paths.append(path)
-        rows = None if mode == "resume" else run_validation(windows, evidence_by_model[label],
-                                                             providers[label], validation_prompt)
+        rows = None if mode == "resume" else _run_and_release(lambda label=label: run_validation(
+            windows, evidence_by_model[label], providers[label], validation_prompt), providers[label])
         validated_by_model[label] = _materialize(path, rows, stage=f"validation/{label}", prompt=validation_prompt,
             inputs=[windows_path, evidence_paths[MODEL_ORDER.index(label)], validation_prompt_path],
-            config={"pipeline": "1.0", "provider": _provider_identity(providers[label], label, model_ids[label])}, mode=mode)
+            config={"pipeline": PIPELINE_VERSION, "provider": _provider_identity(providers[label], label, model_ids[label]),
+                    "temperature": config.get("temperature", 0)}, mode=mode)
     if end == 5: return BuildResult(list(STAGES[start:end + 1]), work_dir, output_dir)
 
     mode = _mode_for(6, start, resume=resume, overwrite=overwrite)
     ensemble_path = work_dir / "ensemble" / "annotations.jsonl"
     final_rows = None if mode == "resume" else ensemble_votes(validated_by_model, int(threshold.get("validation", 2)))
     ensemble_rows = _materialize(ensemble_path, final_rows, stage="ensemble", prompt="", inputs=validation_paths,
-        config={"pipeline": "1.0", "threshold": threshold.get("validation"), "models": model_ids}, mode=mode)
+        config={"pipeline": PIPELINE_VERSION, "threshold": threshold.get("validation"), "models": model_ids}, mode=mode)
     if end == 6: return BuildResult(list(STAGES[start:end + 1]), work_dir, output_dir)
 
     mode = _mode_for(7, start, resume=resume, overwrite=overwrite)
@@ -410,7 +590,7 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     counts_map = config.get("expected_counts", {})
     expected = tuple(int(counts_map[key]) for key in ("windows", "gaps", "evidence"))
     annotation = output_dir / "annotations/remember_900_annotations.jsonl"
-    release_config = {"pipeline": "1.0", "expected_counts": list(expected), "models": model_ids,
+    release_config = {"pipeline": PIPELINE_VERSION, "expected_counts": list(expected), "models": model_ids,
                       "thresholds": _jsonable(threshold), "split_sha256": sha256_file(split_path)}
     if mode == "resume":
         _verify_release(work_dir, output_dir, split_path, expected, inputs=[ensemble_path, split_path], config=release_config)
@@ -426,11 +606,18 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
         # Count/schema validation is a preflight: a mismatch must not publish a
         # partial or misleading public release.
         validate_annotations(sanitize_annotations(private_rcv, split_ids), split_ids, expected)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        copied_split = output_dir / "splits/main_900.txt"
-        _atomic_text(copied_split, split_path.read_text(encoding="utf-8"))
-        stats = export_annotations(private_path, copied_split, annotation, output_dir / "metadata.json", output_dir / "schema.json")
-        _write_release_inventory(work_dir, output_dir, split_path, [ensemble_path, split_path], release_config)
-        validate_annotations(_rows(annotation), [line.strip() for line in copied_split.read_text().splitlines()], expected)
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        staged = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.release-", dir=output_dir.parent))
+        try:
+            _build_staged_release(staged, private_path, split_path, split_ids, expected)
+            _commit_release_transaction(
+                staged, output_dir, overwrite=mode == "overwrite",
+                write_inventory=lambda: _write_release_inventory(
+                    work_dir, output_dir, split_path, [ensemble_path, split_path], release_config),
+                inventory_path=_release_inventory_path(work_dir),
+            )
+        finally:
+            if staged.exists():
+                shutil.rmtree(staged)
     stage_names = list(STAGES[start:end + 1])
     return BuildResult(stage_names, work_dir, output_dir)

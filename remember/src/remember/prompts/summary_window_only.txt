@@ -1,0 +1,11 @@
+Your task is to generate a 'Dialogue Summary' of current [Window] in fact-centered manner.
+
+Instructions:
+1. Fully understand [Window].
+2. Generate a concise, high-density summary of [Window]. The result should be a cohesive narrative that reflects the core insights and the logical evolution of the situation.
+
+Provide your output as JSON. No additional explanation.
+{{"summary": "Your high-density summary here."}}
+
+[Window]
+{window}

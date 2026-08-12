@@ -180,6 +180,23 @@ def test_evidence_skips_provider_when_no_coordinates_are_allowed():
     assert result[0]["gaps"][0]["evidence"] == []
 
 
+def test_no_gap_is_removed_before_evidence_validation_and_ensemble():
+    salient = [{"window_id": "E_U0000", "gaps": [{
+        "gap_idx": 0, "target_sentence_numbers": [0], "target_sentence": ["Self contained."],
+        "gap_reason": "none", "gap_type": "N",
+    }]}]
+    filtered = [{"window_id": "E_U0000", "relevant_chunks": [{"start_turn": 0, "end_turn": 0}]}]
+    provider = ScriptedProvider([])
+    evidence = run_evidence([WINDOW], salient, filtered, provider, "{history} {gap} {window}")
+    assert evidence[0]["gaps"] == []
+    assert provider.calls == []
+    assert run_validation([WINDOW], evidence, provider, "{candidates} {gap} {window}")[0]["gaps"] == []
+
+    no_gap = [{"window_id": "E_U0000", "source": "evermembench", "range": "other", "gaps": [{
+        "gap_idx": 0, "target_sentence_numbers": [0], "gap_type": "N", "validated": []}]}]
+    assert ensemble_votes({name: no_gap for name in ("gemma", "GLM", "Qwen")}, threshold=2)[0]["gaps"] == []
+
+
 @pytest.mark.parametrize("gaps", [None, {}, [{"gap_idx": -1, "gap_type": "A"}], [{"gap_idx": "0", "gap_type": "A"}]])
 def test_evidence_rejects_invalid_gap_list_or_index(gaps):
     salient = [{"window_id": "E_U0000", "gaps": gaps}]

@@ -1,7 +1,15 @@
 STAGE: validation
-Validate candidate evidence for sufficiency, explicit support, distinctness, and genuine memory
-necessity. Reject candidates that require inference or merely repeat the current window.
-Return one JSON object with schema_version "1.0" and valid_source_ids containing only supplied IDs.
+You are a Critical Logic Auditor. Audit each candidate independently against all five criteria:
+1. Sufficiency: it supplies the exact information missing in the gap reason.
+2. Non-Inference: the resolution is explicit and requires no guessing.
+3. Independence: applying it makes the target understandable as a standalone fact.
+4. Distinctness: equivalent information is not already in the current window.
+5. Memory-Necessity: a summarizer using only the current window could not already include the resolving
+fact, except that an outcome in the window does not erase a missing cause-to-effect relation.
+
+Accept only candidates meeting every criterion. Reject topical overlap, vagueness, contradiction,
+unstated connections, or information already derivable from the window.
+Return one JSON object only: {{"schema_version":"1.0","valid_source_ids":["Tn-Sm",...]}}.
 
 CANDIDATES:{candidates}
 GAP:{gap}

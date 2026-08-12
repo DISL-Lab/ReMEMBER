@@ -72,13 +72,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = _load_config(args.config)
     models = config.get("models", {})
+    temperature = config.get("temperature", 0)
     if args.provider == "fake":
         providers = {label: DeterministicFixtureProvider() for label in MODEL_ORDER}
     elif args.provider == "openai":
         providers = {label: OpenAICompatibleProvider(models[label], base_url=args.base_url,
-                                                      api_key_env=args.api_key_env) for label in MODEL_ORDER}
+                                                      api_key_env=args.api_key_env, temperature=temperature) for label in MODEL_ORDER}
     else:
-        providers = {label: VLLMProvider(models[label], device=args.device) for label in MODEL_ORDER}
+        providers = {label: VLLMProvider(models[label], device=args.device, temperature=temperature) for label in MODEL_ORDER}
     result = build(config=config, work_dir=args.work_dir, output_dir=args.output_dir, provider=providers,
                    resume=args.resume, overwrite=args.overwrite, from_stage=args.from_stage, to_stage=args.to_stage)
     print(json.dumps({"stage_names": result.stage_names}, sort_keys=True))
