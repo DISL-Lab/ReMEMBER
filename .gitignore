@@ -219,3 +219,4 @@ __marimo__/
 
 # Project-local temporary artifacts
 *.tmp
+.worktrees/
