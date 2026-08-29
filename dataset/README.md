@@ -19,7 +19,7 @@ required to use it:
 | `gaps[]` | `gap_idx`, `target_sentence_numbers`, resolved `target_sentence`, `gap_type`, `gap_reason`, and `evidence[]` |
 | `gaps[].evidence[]` | `source_id`, the resolved `sentence`, `status`, `validation`, `vote_count`, per-model `votes` |
 
-Released population: **900 windows, 1,498 gaps, 4,132 validated evidence links,
+Released population: **900 windows, 1,498 gaps, 4,134 validated evidence links,
 7,245 flattened salient utterances.**
 
 ### Coordinates and how the text was resolved
@@ -37,16 +37,23 @@ release resolves each coordinate with the segmentation it was annotated under:
 Because the resolved text is baked into every record, consumers never have to
 reproduce either splitter.
 
-Two normalizations were applied and are worth knowing about:
+Two corrections were applied and are worth knowing about:
 
-1. **`S0` evidence coordinates.** A subset of annotation outputs emitted
-   zero-based sentence indices. Twenty such coordinates were remapped to `S1`;
-   in every case the remapped coordinate resolves to exactly the sentence the
-   annotation recorded.
-2. **Three dropped evidence links.** One coordinate addresses a sentence that
-   does not exist, and two collided with an already-present coordinate after the
-   `S0` remap. They are the entire difference between this file's 4,132 evidence
-   links and the v1 index's 4,135. Gaps are identical in both views (1,498).
+1. **Off-by-one evidence coordinates.** 132 validated coordinates are shifted by
+   one sentence: the text the annotation recorded sits at `S+1`. This is not
+   confined to literal `S0` indices — it occurs in whole turn blocks starting at
+   any index. Each was corrected to `S+1` **only when the shifted coordinate
+   resolves to the recorded text exactly**, so every correction is verified
+   rather than inferred. No coordinate needed a shift in any other direction.
+2. **One dropped evidence link.** `R_U0774` gap 0 `T728-S3` addresses a sentence
+   that does not exist under any offset. It is the entire difference between this
+   file's 4,134 evidence links and the v1 index's 4,135. Gaps are identical in
+   both views (1,498).
+
+After these corrections 4,103 of the 4,135 links carry text identical to what the
+annotation recorded. The remaining 31 differ because the recorded string is a
+model echo — markdown stripped, an `@all` prefix dropped, or truncated to `...` —
+and the released text is the real dialogue sentence the coordinate points at.
 
 The `sentence` strings recorded alongside coordinates in the upstream research
 artifacts are model echoes — sometimes paraphrased, emoji-stripped, or truncated
@@ -83,6 +90,26 @@ redistributing those corpora's text, so review their terms first.
 
 The v1 index in `annotations/` remains the option that carries no corpus text at
 all.
+
+## Caveats worth knowing
+
+- `salient_utterances` is a **per-group flattening, not a set.** 188 of the
+  7,245 entries repeat a coordinate already present in the same window, and 26
+  of those repeats carry a different `gap_type`. A scorer that iterates the list
+  weights such a sentence more than once; that is the paper's denominator.
+- `gap_reason` is the **concatenated per-model rationale** carried over from
+  annotation. It names the annotator models, can contain dissenting judgments,
+  and is occasionally truncated. Treat it as provenance, not as a single
+  adjudicated criterion.
+- Punkt occasionally splits a numbered list into a fragment, so a handful of
+  released sentences are as short as `"2."`.
+
+## Provenance
+
+`PROVENANCE.json` records the payload hash and counts, the v1 index and split
+hashes, the SHA-256 of the three read-only inputs the payload was built from,
+the two segmentations, and the coordinate corrections. `scripts/build_payload.py`
+is the join that produced it.
 
 ## Reading it
 

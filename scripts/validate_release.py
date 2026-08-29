@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
@@ -21,9 +22,11 @@ ALLOWED_TOP = {
     "dataset", "benchmark", "remember", "evaluation", "docs", "scripts", "tests",
     "README.md", "LICENSE", ".gitignore",
 }
-# `.superpowers` is the local planning workspace of the tool that produced this
-# release; it is untracked scratch state, not release content.
-IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache", ".superpowers"}
+IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache"}
+# The local planning workspace of the tool that produced this release. Skipped
+# only at the release root, and only ever as untracked scratch state: a tracked
+# path of this name is still reported by the layout scan.
+ROOT_ONLY_IGNORED = {Path(".superpowers")}
 FORBIDDEN_DIRS = {".venv", "venv", "build", "dist", "checkpoints"}
 FORBIDDEN_SUFFIXES = {".ipynb", ".log", ".zip", ".tar", ".gz", ".7z", ".rar", ".pyc",
                       ".pt", ".pth", ".bin", ".safetensors", ".ckpt", ".onnx"}
@@ -37,14 +40,14 @@ CANONICAL_PAYLOAD = Path("remember_900.jsonl.gz")
 ALLOWED_DATASET_FILES = frozenset({
     Path("README.md"), Path("DATASET_CARD.md"), Path("schema.json"), Path("metadata.json"),
     Path("annotations/remember_900_annotations.jsonl"), Path("splits/main_900.txt"),
-    CANONICAL_PAYLOAD,
+    Path("PROVENANCE.json"), CANONICAL_PAYLOAD,
 })
 # Text keys are legitimate in the v2 payload; these structural keys never are.
 FORBIDDEN_PAYLOAD_KEYS = {
     "media", "media_url", "url", "urls", "raw_output", "reasoning", "reasons",
 }
 EXPECTED_PAYLOAD_COUNTS = {
-    "windows": 900, "gaps": 1498, "evidence": 4132, "salient_utterances": 7245,
+    "windows": 900, "gaps": 1498, "evidence": 4134, "salient_utterances": 7245,
 }
 
 
@@ -62,13 +65,18 @@ def _sha256(path: Path) -> str:
 
 
 def _walk(root: Path):
+    root = Path(root)
     for current, directories, files in os.walk(root):
         base = Path(current)
         for name in list(directories):
             candidate = base / name
             if candidate.is_symlink():
                 yield candidate
-        directories[:] = [name for name in directories if name not in IGNORED_DIRS]
+        directories[:] = [
+            name for name in directories
+            if name not in IGNORED_DIRS
+            and (base / name).relative_to(root) not in ROOT_ONLY_IGNORED
+        ]
         directories[:] = [name for name in directories if not (base / name).is_symlink()]
         for name in files:
             yield base / name
@@ -94,7 +102,7 @@ def _tracked(root: Path) -> list[str]:
 def _layout_scan(root: Path) -> list[str]:
     failures: list[str] = []
     for path in root.iterdir():
-        if path.name in IGNORED_DIRS:
+        if path.name in IGNORED_DIRS or Path(path.name) in ROOT_ONLY_IGNORED:
             continue
         if path.name not in ALLOWED_TOP:
             failures.append(f"disallowed top-level path: {path.relative_to(root)}")
@@ -192,7 +200,50 @@ def _payload_integrity(path: Path, root: Path) -> list[str]:
         if not (row.get("history") and row.get("turns")):
             failures.append(f"payload row {index} carries no dialogue text: {relative}")
             break
+    failures.extend(_payload_content_scan(rows, relative))
     return failures
+
+
+# Keys whose values are dialogue and therefore legitimately contain anything.
+_FREE_TEXT_KEYS = {"dialogue", "sentence", "sentences", "target_sentence", "gap_reason"}
+
+
+def _payload_content_scan(rows: Sequence[Mapping[str, Any]], relative: Path) -> list[str]:
+    """Scan the decoded payload for the leaks the UTF-8 source scan cannot reach.
+
+    Dialogue is exempt from the absolute-path rule (real conversations quote
+    paths and URLs), but key names and non-dialogue values are not, and
+    credential material and research-tree names are rejected everywhere.
+    """
+    research_names = ("0-" + "dataset", "1-" + "research", "2-" + "rebuttal")
+    credential_literal = re.compile(
+        r"\b(?:" + "s" + "k-" + r"[A-Za-z0-9_-]{4,}|" + "h" + "f_" + r"[A-Za-z0-9]{4,})")
+    absolute = re.compile(r"(?:(?<=^)|(?<=[\s\"'=]))/[A-Za-z0-9._-]+/|[A-Za-z]:[\\/]")
+    failures: list[str] = []
+
+    def walk(value: Any, free_text: bool) -> None:
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if isinstance(key, str):
+                    if credential_literal.search(key) or absolute.search(key):
+                        failures.append(f"suspicious payload key {key!r}: {relative}")
+                walk(item, free_text or key in _FREE_TEXT_KEYS)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item, free_text)
+        elif isinstance(value, str):
+            if credential_literal.search(value):
+                failures.append(f"credential literal in payload: {relative}")
+            if any(name in value for name in research_names):
+                failures.append(f"research-tree reference in payload: {relative}")
+            if not free_text and absolute.search(value):
+                failures.append(f"machine-local absolute path in payload: {relative}")
+
+    for row in rows:
+        walk(row, False)
+        if failures:
+            break
+    return sorted(set(failures))
 
 
 def _is_historical_document(relative: Path) -> bool:
@@ -275,7 +326,7 @@ def _dataset_summary(root: Path) -> dict[str, Any]:
     schema = root / "dataset/schema.json"
     metadata = root / "dataset/metadata.json"
     split = root / "dataset/splits/main_900.txt"
-    for path in (annotation, schema, metadata, split):
+    for path in (annotation, schema, metadata, split, root / "dataset" / CANONICAL_PAYLOAD):
         if path.is_symlink():
             raise ValueError(f"dataset artifact must not be a symlink: {path.relative_to(root)}")
     rows = [json.loads(line) for line in annotation.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -330,12 +381,16 @@ def scan_release(root: Path = ROOT) -> dict[str, Any]:
     return {"layout": {"failures": layout}, "leakage": {"failures": sorted(set(leakage))}, "dataset": dataset}
 
 
-def _run(command: list[str], *, env: dict[str, str] | None = None) -> dict[str, Any]:
+def _run(command: list[str], *, env: dict[str, str] | None = None,
+         remove: Sequence[str] = ()) -> dict[str, Any]:
     additions = dict(env or {})
     if additions.get("PYTHONPATH") and os.environ.get("PYTHONPATH"):
         additions["PYTHONPATH"] = os.pathsep.join((additions["PYTHONPATH"], os.environ["PYTHONPATH"]))
+    child_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **additions}
+    for name in remove:
+        child_env.pop(name, None)
     completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True,
-                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **additions}, check=False)
+                               env=child_env, check=False)
     return {"ok": completed.returncode == 0, "returncode": completed.returncode,
             "stdout_tail": completed.stdout[-1000:], "stderr_tail": completed.stderr[-1000:]}
 
@@ -426,10 +481,11 @@ def _evaluation_smoke(temp: Path) -> dict[str, Any]:
 
     output = work / "results"
     environment = {"PYTHONPATH": str(work)}
+    # A fake run must never touch a credential, so do not even offer it one.
     result = _run([sys.executable, str(ROOT / "evaluation/evaluate.py"),
                    "--benchmark", str(benchmark), "--predictions", str(predictions),
                    "--output-dir", str(output), "--provider", "fake", "--allow-partial"],
-                  env=environment)
+                  env=environment, remove=("OPENAI_API_KEY",))
     failures: list[str] = []
     if result["ok"]:
         expected = {"scores.json", "scores.csv", "per_window.jsonl", "raw_judgments.jsonl",

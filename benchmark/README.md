@@ -1,8 +1,14 @@
 # ReMEMber benchmark builder
 
-> The checked-in benchmark in [`../dataset/`](../dataset/README.md) is the
-> artifact to evaluate against; this package is the pipeline that produced it
-> and is not needed to run or score a system.
+> This package is the eight-stage **annotation** pipeline. It is not needed to
+> run or score a system — evaluate against the checked-in benchmark in
+> [`../dataset/`](../dataset/README.md) instead.
+>
+> It did not produce `dataset/remember_900.jsonl.gz`. That payload is the join
+> in [`../scripts/build_payload.py`](../scripts/build_payload.py), which resolves
+> coordinates under the segmentation the annotations were made with. This
+> package's `text_release` module uses a different splitter and a different
+> `target_sentence` type, so its validators do not accept the shipped payload.
 
 `remember_benchmark` exposes one builder command with eight deterministic, resumable stages:
 
@@ -87,3 +93,12 @@ publication integrity contract: if a real-model run drifts, `release` aborts wit
 directory, while complete private intermediates remain in the work directory for inspection. Only scripted
 CPU providers were exercised in this release validation; optional real providers and GPU serving require
 environment-specific validation by the user.
+
+### `--token-counter`
+
+`--token-counter paper` (the default) is the exact `cl100k_base` accounting the
+paper used and needs `tiktoken`. `--token-counter whitespace` is an approximate
+dependency-free counter that exists so release smokes can run without
+`tiktoken`; **it does not reproduce paper windowing and must not be used for
+results.** Whichever is used is recorded as `counter_adapter` in the run
+manifest.

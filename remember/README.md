@@ -140,3 +140,12 @@ The project-authored implementation, prompts, documentation, and released
 annotations are provided under the repository's MIT License. This license does
 not apply to upstream dialogue data, model weights, or separately generated
 outputs governed by other terms.
+
+### `--token-counter`
+
+`--token-counter paper` (the default) is the exact `cl100k_base` accounting the
+paper used and needs `tiktoken`. `--token-counter whitespace` is an approximate
+dependency-free counter that exists so release smokes can run without
+`tiktoken`; **it does not reproduce paper windowing and must not be used for
+results.** Whichever is used is recorded as `counter_adapter` in the run
+manifest.

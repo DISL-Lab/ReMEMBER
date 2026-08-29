@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 from dataclasses import asdict, fields
+import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -208,6 +209,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = _load_config(args.config)
     counter = (Cl100kTokenCounter() if args.token_counter == "paper"
                else WhitespaceTokenCounter())
+    if args.token_counter != "paper":
+        print("warning: --token-counter whitespace does not reproduce paper windowing; "
+              "it is intended for dependency-free smoke runs only", file=sys.stderr)
     if args.provider == "fake":
         generator = DeterministicFakeGenerator()
         embedder = DeterministicHashEmbedder()

@@ -32,7 +32,7 @@ A run over anything other than the exact canonical 900 windows requires
 ```
 
 `summary` is what the system produced for the current window. Memory may be
-given three ways, in precedence order:
+given in these forms, in precedence order:
 
 | form | meaning |
 |---|---|
@@ -46,7 +46,9 @@ never silently turned into `{'k': 'v'}` text inside a judge prompt.
 
 ## Running
 
-Local vLLM judge (GPU IDs are always explicit; nothing is chosen for you):
+Local vLLM judge. vLLM is not in `requirements.txt` — install it separately
+(`python -m pip install vllm`) for this path. GPU IDs are always explicit;
+nothing is chosen for you:
 
 ```bash
 python evaluation/evaluate.py \

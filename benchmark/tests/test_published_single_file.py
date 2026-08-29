@@ -17,9 +17,9 @@ import pytest
 
 DATASET = Path(__file__).parents[2] / "dataset"
 PAYLOAD = DATASET / "remember_900.jsonl.gz"
-PAYLOAD_SHA256 = "9353ec8f71d8d0a92ab4ae7ca95ebfeb152e8cb9be73f02ad982778f9f61278f"
+PAYLOAD_SHA256 = "d5404512111703e03ed5df8a61c69a7094b4a78393ec7b21c01b9841b86a25d3"
 
-EXPECTED_COUNTS = {"windows": 900, "gaps": 1498, "evidence": 4132, "salient_utterances": 7245}
+EXPECTED_COUNTS = {"windows": 900, "gaps": 1498, "evidence": 4134, "salient_utterances": 7245}
 RANGE_VALUES = {"8k~16k", "16k~32k", "32k~64k", "64k~128k", "128k~160k"}
 SOURCE_BY_PREFIX = {"E": "evermembench", "L": "locomo", "R": "realtalk"}
 
@@ -111,3 +111,97 @@ def test_published_v1_index_bytes_are_unchanged():
     assert sha256(DATASET / "metadata.json") == (
         "ddf8387a312743e433a6d4493e064e972b6dc6f93f67ce6251dfb39b591f493c"
     )
+
+
+def _history_index(history):
+    """Reproduce the annotation-time history segmentation from the record alone."""
+    import re
+    from nltk.tokenize import sent_tokenize
+
+    emoji = re.compile("[" "\U0001F600-\U0001F64F" "\U0001F300-\U0001F5FF" "\U0001F680-\U0001F6FF"
+                       "\U0001F1E0-\U0001F1FF" "\U00002600-\U000027BF" "\U0001F900-\U0001F9FF"
+                       "\U0001FA00-\U0001FA6F" "\U0001FA70-\U0001FAFF" "\U00002702-\U000027B0"
+                       "\U000024C2-\U0001F251" "]+", flags=re.UNICODE)
+    index = {}
+    for turn_index, turn in enumerate(history):
+        stripped = emoji.sub("", turn["dialogue"]).strip()
+        sentences = [s.strip() for s in sent_tokenize(stripped) if s.strip()] or [stripped]
+        for sentence_index, sentence in enumerate(sentences, 1):
+            index[f"T{turn_index}-S{sentence_index}"] = sentence
+    return index
+
+
+def test_every_evidence_sentence_re_resolves_from_its_own_record(rows):
+    """The payload is self-contained: no external file is needed to check it."""
+    checked = 0
+    for row in rows:
+        index = _history_index(row["history"])
+        for gap in row["gaps"]:
+            for item in gap["evidence"]:
+                assert index[item["source_id"]] == item["sentence"], (
+                    row["window_id"], gap["gap_idx"], item["source_id"])
+                checked += 1
+    assert checked == EXPECTED_COUNTS["evidence"]
+
+
+def test_every_target_and_salient_sentence_re_resolves_from_its_own_record(rows):
+    from nltk.tokenize import sent_tokenize
+
+    for row in rows:
+        flat = []
+        for turn in row["turns"]:
+            text = turn["dialogue"]
+            flat.extend([s.strip() for s in sent_tokenize(text.strip()) if s.strip()] or [text])
+        for gap in row["gaps"]:
+            for number, sentence in zip(gap["target_sentence_numbers"], gap["target_sentence"]):
+                assert flat[number] == sentence, (row["window_id"], gap["gap_idx"], number)
+        for salient in row["salient_utterances"]:
+            [number], [sentence] = salient["sentence_numbers"], salient["sentences"]
+            assert flat[number] == sentence, (row["window_id"], salient["salient_idx"])
+
+
+def test_the_payload_relates_to_the_v1_index_exactly_as_documented(rows):
+    """Gap set identical; evidence differs only by the one documented drop."""
+    path = DATASET / "annotations/remember_900_annotations.jsonl"
+    v1 = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    v1_gaps = {(row["window_id"], gap["gap_idx"]) for row in v1 for gap in row["gaps"]}
+    v2_gaps = {(row["window_id"], gap["gap_idx"]) for row in rows for gap in row["gaps"]}
+    assert v1_gaps == v2_gaps
+
+    v1_links = sum(len(gap["evidence"]) for row in v1 for gap in row["gaps"])
+    v2_links = sum(len(gap["evidence"]) for row in rows for gap in row["gaps"])
+    assert (v1_links, v2_links) == (4135, 4134)
+
+    # Every v2 link is its v1 counterpart at the same or the next sentence index.
+    v1_by_gap = {(row["window_id"], gap["gap_idx"]): [item["source_id"] for item in gap["evidence"]]
+                 for row in v1 for gap in row["gaps"]}
+    shifted = dropped = 0
+    for row in rows:
+        for gap in row["gaps"]:
+            original = v1_by_gap[(row["window_id"], gap["gap_idx"])]
+            released = [item["source_id"] for item in gap["evidence"]]
+            dropped += len(original) - len(released)
+            offset = 0
+            for source_id in released:
+                while original[offset] != source_id:
+                    turn, _, number = original[offset].rpartition("-S")
+                    assert f"{turn}-S{int(number) + 1}" == source_id, (source_id, original[offset])
+                    shifted += 1
+                    break
+                offset += 1
+    assert (shifted, dropped) == (132, 1)
+
+
+def test_provenance_file_matches_the_shipped_artifacts(rows):
+    provenance = json.loads((DATASET / "PROVENANCE.json").read_text(encoding="utf-8"))
+    payload = provenance["artifacts"]["payload"]
+    assert payload["sha256"] == PAYLOAD_SHA256
+    assert payload["counts"] == EXPECTED_COUNTS
+    assert provenance["artifacts"]["v1_index"]["sha256"] == hashlib.sha256(
+        (DATASET / "annotations/remember_900_annotations.jsonl").read_bytes()).hexdigest()
+    assert provenance["artifacts"]["split"]["sha256"] == hashlib.sha256(
+        (DATASET / "splits/main_900.txt").read_bytes()).hexdigest()
+    assert (ROOT_BUILDER := DATASET.parent / provenance["builder"]).is_file(), ROOT_BUILDER
+    assert provenance["corrections"]["shifted_evidence_coordinates"] == 132
+    assert provenance["corrections"]["dropped_evidence_links"] == ["R_U0774 gap 0 T728-S3"]

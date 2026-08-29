@@ -32,7 +32,7 @@ This is the official github repository for "Don't Scroll Back: Missing-Evidence 
   utterances all live in the record, so nothing else has to be downloaded.
 - [`evaluation/`](evaluation/README.md): `evaluate.py`, the whole evaluator in one file.
 - [`remember/`](remember/README.md): the end-to-end ReMEMber method.
-- [`benchmark/`](benchmark/README.md): the pipeline that produced the dataset.
+- [`benchmark/`](benchmark/README.md): the eight-stage annotation pipeline.
 
 ## Install
 
@@ -48,16 +48,20 @@ Predictions are one JSON object per line with `window_id`, `summary`, and
 `memory_text` (ReMEMber's own `memory.text` output is accepted directly):
 
 ```bash
+export MY_JUDGE_KEY=...
 python evaluation/evaluate.py \
   --benchmark dataset/remember_900.jsonl.gz \
   --predictions runs/my_system.jsonl \
   --output-dir runs/my_system_scores \
-  --provider vllm --gpu-devices 0,1
+  --provider openai --base-url https://your-endpoint/v1 --api-key-env MY_JUDGE_KEY
 ```
 
 This reports MR, MKF, WKF, factuality, conciseness, and diagnostic MR-gated MKF.
-See [`evaluation/README.md`](evaluation/README.md) for the OpenAI-compatible
-endpoint, resume, and output contract.
+To judge locally instead, install vLLM (`python -m pip install vllm`, not in
+`requirements.txt` because it is environment-specific) and pass
+`--provider vllm --gpu-devices 0,1`. See
+[`evaluation/README.md`](evaluation/README.md) for resume and the output
+contract.
 
 ## Usage
 

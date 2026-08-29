@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -85,6 +86,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         providers = {label: VLLMProvider(models[label], device=args.device, temperature=temperature) for label in MODEL_ORDER}
     counter = None if args.token_counter == "paper" else WhitespaceCounter()
+    if counter is not None:
+        print("warning: --token-counter whitespace does not reproduce paper windowing; "
+              "it is intended for dependency-free smoke runs only", file=sys.stderr)
     result = build(config=config, work_dir=args.work_dir, output_dir=args.output_dir, provider=providers,
                    counter=counter, resume=args.resume, overwrite=args.overwrite,
                    from_stage=args.from_stage, to_stage=args.to_stage)

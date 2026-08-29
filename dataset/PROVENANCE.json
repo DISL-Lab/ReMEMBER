@@ -1,0 +1,56 @@
+{
+  "artifacts": {
+    "payload": {
+      "counts": {
+        "evidence": 4134,
+        "gaps": 1498,
+        "salient_utterances": 7245,
+        "windows": 900
+      },
+      "path": "remember_900.jsonl.gz",
+      "record_schema_version": "2.0",
+      "sha256": "d5404512111703e03ed5df8a61c69a7094b4a78393ec7b21c01b9841b86a25d3"
+    },
+    "split": {
+      "path": "splits/main_900.txt",
+      "sha256": "0eef55c9307dbb8155f664a860503760eb9314ba2594383996a48728bdb961ee"
+    },
+    "v1_index": {
+      "counts": {
+        "evidence": 4135,
+        "gaps": 1498,
+        "windows": 900
+      },
+      "path": "annotations/remember_900_annotations.jsonl",
+      "sha256": "a921ae399bd646d469a6824db4d5421358aee387dd1124ff2f1ee2f8c0a8ab3a"
+    }
+  },
+  "authorization": {
+    "redistributable_text": true,
+    "scope": [
+      "EverMemBench",
+      "LoCoMo",
+      "RealTalk"
+    ]
+  },
+  "builder": "scripts/build_payload.py",
+  "built_from": {
+    "rcv": "3414a101cf9f99c76a5a2404da6296543d037de1871395334d0bb7a19ee8a41e",
+    "salient": "e65ed00720cb8bd6ce7e576f0e8f53c966423625da5ca6a8017158762994ebf2",
+    "windows": "867534724b6c73800e815f8e5d8e0c5426a39662c210c143fd7bece655cfe4ec"
+  },
+  "corrections": {
+    "dropped_evidence_links": [
+      "R_U0774 gap 0 T728-S3"
+    ],
+    "evidence_text_differing_as_model_echo": 31,
+    "evidence_text_identical_to_annotation_record": 4103,
+    "shift": "+1 sentence, adopted only when the shifted coordinate resolves to the recorded text exactly",
+    "shifted_evidence_coordinates": 132
+  },
+  "schema_version": "1.0",
+  "segmentation": {
+    "evidence": "emoji removal then nltk punkt, per turn, one-based",
+    "target_and_salient": "nltk punkt over raw dialogue, flattened, zero-based"
+  }
+}

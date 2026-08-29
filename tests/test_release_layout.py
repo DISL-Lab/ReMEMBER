@@ -144,13 +144,13 @@ def test_validator_prints_one_machine_readable_json_summary():
     assert {path for path in generated if path.exists()} == before
 
 
-def test_documentation_and_three_product_folders_exist():
+def test_documentation_and_every_product_folder_exist():
     assert (ROOT / "README.md").is_file()
     assert (ROOT / "LICENSE").read_text(encoding="utf-8").startswith("MIT License")
-    assert (ROOT / "benchmark/README.md").is_file()
-    assert {path.name for path in ROOT.iterdir() if path.is_dir() and path.name in {"dataset", "benchmark", "remember"}} == {
-        "dataset", "benchmark", "remember"
-    }
+    products = {"dataset", "benchmark", "remember", "evaluation"}
+    assert {path.name for path in ROOT.iterdir() if path.is_dir()} >= products
+    for name in products:
+        assert (ROOT / name / "README.md").is_file(), name
     benchmark_readme = (ROOT / "benchmark/README.md").read_text(encoding="utf-8")
     assert "fail-closed" in benchmark_readme
     assert "without replacing the public" in benchmark_readme
@@ -413,6 +413,53 @@ def test_a_corrupt_or_missing_payload_is_reported(tmp_path):
 def test_the_checked_in_payload_has_the_released_population():
     summary = validator.scan_release(ROOT)
     assert summary["dataset"]["payload"]["counts"] == {
-        "windows": 900, "gaps": 1498, "evidence": 4132, "salient_utterances": 7245}
+        "windows": 900, "gaps": 1498, "evidence": 4134, "salient_utterances": 7245}
     assert summary["dataset"]["index"]["counts"] == {
         "windows": 900, "gaps": 1498, "evidence": 4135}
+
+
+def test_payload_counts_are_enforced_for_a_canonical_sized_split(tmp_path):
+    dataset = _tiny_dataset(tmp_path)
+    ids = [f"E_U{index:04d}" for index in range(900)]
+    (dataset / "splits/main_900.txt").write_text(
+        "".join(f"{item}\n" for item in ids), encoding="utf-8")
+    template = _read_payload(dataset)[0]
+    _write_payload(dataset, [dict(template, window_id=item) for item in ids])
+    failures = _payload_failures(tmp_path)
+    assert "payload counts" in failures
+    assert "'evidence': 900" in failures and "'evidence': 4134" in failures
+
+
+def test_the_payload_is_scanned_for_leaks_despite_the_utf8_exemption(tmp_path):
+    dataset = _tiny_dataset(tmp_path)
+    rows = _read_payload(dataset)
+    research = "1-" + "research"
+    credential = "s" + "k-projABCDEFGH"
+    rows[0]["history"][0]["dialogue"] = f"see {research} and key {credential}"
+    _write_payload(dataset, rows)
+    failures = _payload_failures(tmp_path)
+    assert "credential literal in payload" in failures
+    assert "research-tree reference in payload" in failures
+
+
+def test_dialogue_may_quote_a_path_but_a_non_dialogue_value_may_not(tmp_path):
+    dataset = _tiny_dataset(tmp_path)
+    rows = _read_payload(dataset)
+    machine_path = "/" + "mnt/private/notes"
+    rows[0]["history"][0]["dialogue"] = f"the log is at {machine_path}"
+    _write_payload(dataset, rows)
+    assert "machine-local absolute path in payload" not in _payload_failures(tmp_path)
+
+    rows[0]["speaker_home"] = machine_path
+    _write_payload(dataset, rows)
+    assert "machine-local absolute path in payload" in _payload_failures(tmp_path)
+
+
+def test_a_planning_workspace_below_the_root_is_still_scanned(tmp_path):
+    _tiny_dataset(tmp_path)
+    hidden = tmp_path / "benchmark/.superpowers"
+    hidden.mkdir(parents=True)
+    research = "1-" + "research"
+    (hidden / "notes.md").write_text(f"input: {research}\n", encoding="utf-8")
+    failures = "\n".join(validator.scan_release(tmp_path)["leakage"]["failures"])
+    assert "research-tree runtime reference: benchmark/.superpowers/notes.md" in failures

@@ -61,6 +61,7 @@ METRIC_DEPENDENCIES = {
     "conciseness": ("mkf", "wkf"),
     "mr_gated_mkf": ("mr", "mkf"),
 }
+_ATTEMPT_ERROR_CAP = 20
 METRIC_MAX_TOKENS = {"mr": 2048, "mkf": 4096, "wkf": 4096, "atomic": 2048, "factuality": 2048}
 
 FACTUALITY_CATEGORIES = (
@@ -392,14 +393,29 @@ def validate_placeholder_set(template: str, expected: set[str]) -> None:
         )
 
 
+_PROMPT_TOKEN = re.compile(r"\{\{|\}\}|\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
 def fill_prompt(template: str, **values: object) -> str:
+    """Substitute in a single pass so a value is never rescanned.
+
+    Sequential replacement would let a prediction containing `{gap_cases}` pull
+    the gold answers into the summary section, and would unescape doubled braces
+    inside the caller's own text.
+    """
     expected = extract_live_placeholders(template)
     if set(values) != expected:
         raise InputError("prompt values do not match template placeholders")
-    rendered = template
-    for key, value in values.items():
-        rendered = rendered.replace("{" + key + "}", str(value))
-    return rendered.replace("{{", "{").replace("}}", "}")
+
+    def substitute(match: re.Match[str]) -> str:
+        token = match.group(0)
+        if token == "{{":
+            return "{"
+        if token == "}}":
+            return "}"
+        return str(values[match.group(1)])
+
+    return _PROMPT_TOKEN.sub(substitute, template)
 
 
 def load_prompts(prompt_dir: Path) -> dict[str, str]:
@@ -659,7 +675,8 @@ def _coverage_score(value: Any) -> float | None:
     return number
 
 
-def _line_numbers(value: Any) -> list[str] | None:
+def _line_numbers(value: Any, max_line: int | None) -> list[str] | None:
+    """Citations must name a real summary line; MKF/WKF number from S1."""
     if value is None:
         return []
     if not isinstance(value, list):
@@ -667,6 +684,9 @@ def _line_numbers(value: Any) -> list[str] | None:
     lines: list[str] = []
     for item in value:
         if not isinstance(item, str) or not re.fullmatch(r"S\d+", item.strip()):
+            return None
+        number = int(item.strip()[1:])
+        if number < 1 or (max_line is not None and number > max_line):
             return None
         lines.append(item.strip())
     return lines
@@ -677,6 +697,7 @@ def normalize_coverage(
     expected_ids: Sequence[str],
     *,
     id_field: str,
+    max_line: int | None = None,
 ) -> list[dict[str, Any]] | None:
     if items is None:
         return None
@@ -687,7 +708,7 @@ def normalize_coverage(
         if not isinstance(item_id, str) or item_id not in expected or item_id in by_id:
             return None
         score = _coverage_score(item.get("score"))
-        lines = _line_numbers(item.get("line_number"))
+        lines = _line_numbers(item.get("line_number"), max_line)
         if score is None or lines is None:
             return None
         by_id[item_id] = {id_field: item_id, "score": score, "line_number": lines}
@@ -862,17 +883,24 @@ class FakeProvider:
     def complete_batch(self, prompts: Sequence[str], *, max_tokens: int) -> list[Completion]:
         return [self._respond(prompt) for prompt in prompts]
 
+    # Every marker below occurs in the prompt TEMPLATE, never only in a
+    # substituted value, so a prediction cannot steer the dispatch.
+    MARKERS = (
+        ("[GAP ITEMS]", "_mr"),
+        ("Gap Cases (G#)", "_mkf"),
+        ("Salient Utterances (U#)", "_wkf"),
+        ("Provide your answer in JSON format", "_factuality"),
+        ('"fact_id"', "_atomic"),
+    )
+
     def _respond(self, prompt: str) -> Completion:
-        if "[GAP ITEMS]" in prompt:
-            text = self._mr(prompt)
-        elif "[CURRENT WINDOW]" in prompt:
-            text = self._factuality(prompt)
-        elif "Gap Cases (G#)" in prompt:
-            text = self._mkf(prompt)
-        elif "Salient Utterances (U#)" in prompt:
-            text = self._wkf(prompt)
-        else:
-            text = self._atomic(prompt)
+        matched = [name for marker, name in self.MARKERS if marker in prompt]
+        if len(matched) != 1:
+            raise AssertionError(
+                f"fake provider could not identify the prompt (matched {matched}); "
+                "a prompt template changed or a value injected a marker"
+            )
+        text = getattr(self, matched[0])(prompt)
         return Completion(text=text, prompt_tokens=len(prompt.split()),
                           completion_tokens=len(text.split()))
 
@@ -975,13 +1003,18 @@ class OpenAICompatibleProvider:
                     )
                 except Exception as exc:  # provider/transport failure
                     message = f"{type(exc).__name__}: {exc}"
-                    if _is_thinking_incompatibility(message):
-                        raise InputError(
-                            "the endpoint rejected the no-thinking chat template option "
-                            "(chat_template_kwargs.enable_thinking=false); it is not compatible "
-                            f"with the paper's judge configuration: {message}"
-                        ) from exc
                     errors.append(message)
+                    if attempt == 0 and _is_thinking_incompatibility(message):
+                        # Record it like any other exhausted request so the caller
+                        # can checkpoint the batch before aborting.
+                        results.append(Completion(
+                            text="", prompt_tokens=None, completion_tokens=None,
+                            retry_count=attempt, attempt_errors=tuple(errors),
+                            error="the endpoint rejected the no-thinking chat template option "
+                                  "(chat_template_kwargs.enable_thinking=false); it is not "
+                                  f"compatible with the paper's judge configuration: {message}",
+                        ))
+                        break
                     continue
                 usage = getattr(response, "usage", None)
                 results.append(Completion(
@@ -1119,6 +1152,7 @@ def _reusable(row: Mapping[str, Any], request: _Request) -> bool:
     return (
         row.get("completed") is True
         and row.get("error") is None
+        and isinstance(row.get("raw_output"), str)
         and row.get("metric") == request.metric
         and row.get("phase") == request.phase
         and row.get("window_id") == request.window_id
@@ -1251,8 +1285,12 @@ def evaluate_predictions(
     def store_factory(parser):
         def store(request: _Request, completion: Completion) -> None:
             value, parse_ok, returned = parser(request, completion.text)
-            raw_by_id[request.request_id] = _raw_row(
-                request, completion, parse_ok=parse_ok, returned_items=returned)
+            previous = raw_by_id.get(request.request_id, {}).get("attempt_errors") or []
+            row = _raw_row(request, completion, parse_ok=parse_ok, returned_items=returned)
+            # A resumed request keeps the messages from the attempt it replaces.
+            row["attempt_errors"] = ([str(item) for item in previous]
+                                     + list(completion.attempt_errors))[-_ATTEMPT_ERROR_CAP:]
+            raw_by_id[request.request_id] = row
             parsed[request.request_id] = {"request": request, "value": value, "parse_ok": parse_ok}
         return store
 
@@ -1284,7 +1322,8 @@ def evaluate_predictions(
     def coverage_parser(field_name):
         def parser(request, text):
             items = normalize_coverage(parse_coverage(text), request.expected_item_ids,
-                                       id_field=field_name)
+                                       id_field=field_name,
+                                       max_line=request.payload["summary_sentences"])
             return items, items is not None, len(items or [])
         return parser
 
@@ -1333,7 +1372,8 @@ def evaluate_predictions(
 
         run(checker_requests, checker_parser, max_tokens=metric_max_tokens["factuality"])
 
-    per_window = _build_per_window(benchmark_rows, predictions, parsed, inference)
+    per_window = _build_per_window(benchmark_rows, predictions, parsed, inference,
+                                   set(metrics))
     return per_window, _ordered_raw(raw_by_id)
 
 
@@ -1367,7 +1407,8 @@ def _positive_lines(items: Sequence[Mapping[str, Any]] | None) -> set[str]:
     return lines
 
 
-def _build_per_window(benchmark_rows, predictions, parsed, inference) -> list[dict[str, Any]]:
+def _build_per_window(benchmark_rows, predictions, parsed, inference,
+                      requested) -> list[dict[str, Any]]:
     per_window: list[dict[str, Any]] = []
     for row in benchmark_rows:
         window_id = row["window_id"]
@@ -1417,7 +1458,7 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference) -> list[di
                 "parse_failure": bool(items) and value is None,
             }
 
-        if "mkf" in inference and "wkf" in inference:
+        if "conciseness" in requested:
             covered = _positive_lines(mkf_entry["value"] if mkf_entry else None)
             covered |= _positive_lines(wkf_entry["value"] if wkf_entry else None)
             record["conciseness"] = {
@@ -1427,7 +1468,7 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference) -> list[di
                 or bool(record.get("wkf", {}).get("parse_failure")),
             }
 
-        if "mr" in inference and "mkf" in inference:
+        if "mr_gated_mkf" in requested:
             mr_scores = record.get("mr", {}).get("decisions", {})
             mkf_scores = record.get("mkf", {}).get("scores", {})
             gated = [mkf_scores.get(key, 0.0) for key, value in mr_scores.items() if value == 1]
@@ -1546,8 +1587,9 @@ def scores_to_csv(scores: Mapping[str, Any]) -> str:
         for aggregation in ("micro", "macro"):
             entry = block[aggregation]
             writer.writerow([
-                metric, aggregation, f"{entry['value']:.6f}", entry["numerator"],
-                entry["denominator"], entry["windows_with_items"],
+                metric, aggregation, f"{entry['value']:.6f}",
+                f"{float(entry['numerator']):.6f}", entry["denominator"],
+                entry["windows_with_items"],
                 entry["windows_without_items"], entry["parse_failure_count"],
                 "true" if block.get("diagnostic") else "false",
             ])
@@ -1740,6 +1782,10 @@ def write_outputs_atomically(
                           json.dumps(final_manifest, ensure_ascii=False, indent=2) + "\n")
 
         _reload_and_validate(staged, per_window)
+        umask = os.umask(0); os.umask(umask)
+        os.chmod(staged, 0o777 & ~umask)
+        for name in FINAL_FILES:
+            os.chmod(staged / name, 0o666 & ~umask)
 
         if output_dir.exists():
             backup = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.backup-",

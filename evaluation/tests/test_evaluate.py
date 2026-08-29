@@ -430,8 +430,11 @@ def test_openai_provider_reports_a_thinking_incompatibility_clearly(monkeypatch)
     monkeypatch.setenv("TEST_JUDGE_KEY", "secret")
     provider = ev.build_provider(_args(provider="openai", base_url="http://local",
                                        api_key_env="TEST_JUDGE_KEY"))
-    with pytest.raises(ev.InputError, match="no-thinking"):
-        provider.complete_batch(["p"], max_tokens=16)
+    # Reported as an exhausted request rather than raised mid-batch, so the
+    # caller can checkpoint everything already paid for before aborting.
+    [completion] = provider.complete_batch(["p"], max_tokens=16)
+    assert "no-thinking" in completion.error
+    assert completion.retry_count == 0 and completion.text == ""
 
 
 def test_vllm_provider_sets_visibility_before_importing(monkeypatch):
@@ -757,3 +760,142 @@ def test_successful_run_removes_the_resume_point(tmp_path):
     output = tmp_path / "results"
     assert ev.execute(_args(output_dir=output)) == 0
     assert not (tmp_path / ".results.in_progress").exists()
+
+
+def test_a_failed_request_checkpoints_the_whole_batch_before_aborting(tmp_path):
+    benchmark = ev.load_benchmark(BENCHMARK)
+    predictions = ev.load_predictions(PREDICTIONS, benchmark.ordered_ids, allow_partial=True)
+    saved = []
+
+    class _FailsSecond:
+        def __init__(self):
+            self._inner = ev.FakeProvider()
+
+        def complete_batch(self, prompts, *, max_tokens):
+            done = self._inner.complete_batch(prompts, max_tokens=max_tokens)
+            return [done[0]] + [ev.Completion(text="", prompt_tokens=None, completion_tokens=None,
+                                             retry_count=2, attempt_errors=("boom",), error="boom")
+                                for _ in done[1:]]
+
+    with pytest.raises(RuntimeError, match="failed after retries"):
+        ev.evaluate_predictions(
+            list(benchmark.rows), predictions, ev.load_prompts(PROMPT_DIR), _FailsSecond(),
+            metrics=["mr"], metric_max_tokens=ev.METRIC_MAX_TOKENS, batch_size=8,
+            checkpoint=lambda rows: saved.append([dict(row) for row in rows]))
+    assert saved, "the batch must be checkpointed before the abort"
+    final = {row["request_id"]: row for row in saved[-1]}
+    assert len(final) == 2
+    assert [row["completed"] for row in final.values()] == [True, False]
+    assert any(row["error"] == "boom" for row in final.values())
+
+
+def test_resume_carries_prior_attempt_errors_into_the_audit_row():
+    benchmark = ev.load_benchmark(BENCHMARK)
+    predictions = ev.load_predictions(PREDICTIONS, benchmark.ordered_ids, allow_partial=True)
+    prompts = ev.load_prompts(PROMPT_DIR)
+    _, raw = ev.evaluate_predictions(
+        list(benchmark.rows), predictions, prompts, ev.FakeProvider(),
+        metrics=["mr"], metric_max_tokens=ev.METRIC_MAX_TOKENS, batch_size=8)
+    failed = [dict(row) for row in raw]
+    failed[0].update(completed=False, error="earlier failure",
+                     attempt_errors=["earlier failure"], raw_output="")
+    _, replayed = ev.evaluate_predictions(
+        list(benchmark.rows), predictions, prompts, ev.FakeProvider(),
+        metrics=["mr"], metric_max_tokens=ev.METRIC_MAX_TOKENS, batch_size=8,
+        cached_raw=failed)
+    row = {item["request_id"]: item for item in replayed}[failed[0]["request_id"]]
+    assert row["completed"] is True and row["error"] is None
+    assert "earlier failure" in row["attempt_errors"]
+
+
+def test_a_prediction_cannot_inject_a_placeholder_or_unescape_its_own_braces():
+    template = "{N} lines:\n{summary}\n\n{M} cases:\n{gap_cases}"
+    rendered = ev.fill_prompt(template, N=1, summary="S1: uses {{db}} and {gap_cases}",
+                              M=1, gap_cases="G0: gold answer")
+    assert "gold answer" not in rendered.split("1 cases:")[0]
+    assert "{{db}}" in rendered
+
+
+def test_out_of_range_line_citations_invalidate_the_coverage_judgment():
+    items = [{"utterance_num": "U0", "score": 1.0, "line_number": ["S1", "S99"]}]
+    assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num", max_line=2) is None
+    assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num", max_line=99) is not None
+    zero = [{"utterance_num": "U0", "score": 1.0, "line_number": ["S0"]}]
+    assert ev.normalize_coverage(zero, ["U0"], id_field="utterance_num", max_line=3) is None
+
+
+def test_the_fake_provider_refuses_an_ambiguous_prompt():
+    with pytest.raises(AssertionError, match="could not identify"):
+        ev.FakeProvider().complete_batch(["nothing recognizable here"], max_tokens=16)
+    prompts = ev.load_prompts(PROMPT_DIR)
+    for name, template in prompts.items():
+        matched = [marker for marker, _ in ev.FakeProvider.MARKERS if marker in template]
+        assert len(matched) == 1, (name, matched)
+
+
+def test_only_requested_metrics_are_reported(tmp_path):
+    benchmark = ev.load_benchmark(BENCHMARK)
+    predictions = ev.load_predictions(PREDICTIONS, benchmark.ordered_ids, allow_partial=True)
+    per_window, _ = ev.evaluate_predictions(
+        list(benchmark.rows), predictions, ev.load_prompts(PROMPT_DIR), ev.FakeProvider(),
+        metrics=["mkf"], metric_max_tokens=ev.METRIC_MAX_TOKENS, batch_size=8)
+    scores = ev.score_run(per_window)
+    assert "mkf" in scores and "conciseness" not in scores and "mr_gated_mkf" not in scores
+
+
+def test_results_are_readable_by_other_users(tmp_path):
+    import stat
+    output = tmp_path / "results"
+    assert ev.execute(_args(output_dir=output)) == 0
+    assert stat.S_IMODE(output.stat().st_mode) & stat.S_IROTH
+    for name in ev.FINAL_FILES:
+        assert stat.S_IMODE((output / name).stat().st_mode) & stat.S_IROTH, name
+
+
+def test_a_cached_row_without_its_output_is_reissued():
+    benchmark = ev.load_benchmark(BENCHMARK)
+    predictions = ev.load_predictions(PREDICTIONS, benchmark.ordered_ids, allow_partial=True)
+    prompts = ev.load_prompts(PROMPT_DIR)
+    _, raw = ev.evaluate_predictions(
+        list(benchmark.rows), predictions, prompts, ev.FakeProvider(),
+        metrics=["mr"], metric_max_tokens=ev.METRIC_MAX_TOKENS, batch_size=8)
+    damaged = [dict(row) for row in raw]
+    del damaged[0]["raw_output"]
+    provider = _CountingProvider()
+    ev.evaluate_predictions(
+        list(benchmark.rows), predictions, prompts, provider,
+        metrics=["mr"], metric_max_tokens=ev.METRIC_MAX_TOKENS, batch_size=8, cached_raw=damaged)
+    assert provider.calls == 1
+
+
+@pytest.mark.parametrize("damage,message", [
+    ("missing", "nothing to resume"),
+    ("corrupt_manifest", "unreadable"),
+    ("checkpoint_hash", "does not match its recorded hash"),
+    ("malformed_checkpoint", "malformed"),
+])
+def test_resume_rejects_unusable_interrupted_state(tmp_path, damage, message):
+    output = tmp_path / "results"
+    work = tmp_path / ".results.in_progress"
+    if damage != "missing":
+        work.mkdir(parents=True)
+        args = _args(output_dir=output)
+        benchmark = ev.load_benchmark(BENCHMARK)
+        manifest = ev.build_run_manifest(
+            benchmark, PREDICTIONS, {n: ev.sha256_text(t) for n, t in ev.load_prompts(PROMPT_DIR).items()},
+            args, list(ev.REPORTED_METRICS), list(ev.INFERENCE_METRICS),
+            list(benchmark.ordered_ids), status="in_progress")
+        (work / "raw_judgments.jsonl").write_text('{"request_id": "mr:judge:E_U0001"}\n')
+        if damage == "corrupt_manifest":
+            (work / "run_manifest.json").write_text("not json\n")
+        elif damage == "checkpoint_hash":
+            manifest["checkpoint_sha256"] = "0" * 64
+            (work / "run_manifest.json").write_text(json.dumps(manifest))
+        else:
+            manifest["checkpoint_sha256"] = ev.sha256_file(work / "raw_judgments.jsonl")
+            (work / "run_manifest.json").write_text(json.dumps(manifest))
+            (work / "raw_judgments.jsonl").write_text("not json\n")
+            manifest["checkpoint_sha256"] = ev.sha256_file(work / "raw_judgments.jsonl")
+            (work / "run_manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ev.ResumeError, match=message):
+        ev.execute(_args(output_dir=output, resume=True))
