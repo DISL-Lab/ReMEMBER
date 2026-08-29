@@ -77,10 +77,12 @@ textual adequacy; the canonical payload can, and is redistributed on that
 understanding.
 
 Both views retain source-derived labels and model-vote metadata, which may
-reflect annotation and model biases. `gap_reason` is the concatenated per-model
-gap rationale carried over from annotation, so it names the annotator models and
-can contain dissenting judgments; treat it as provenance, not as a single
-adjudicated criterion. The canonical payload's evidence includes rejected
+reflect annotation and model biases. `gap_reason` is a concatenation of
+per-model rationales carried over from annotation and can contain dissenting
+judgments; the leading `[model_name]` tag on each segment is stripped, so the
+reasoning is released but the annotator model's identity is not. Treat it as
+provenance, not as a single adjudicated criterion. The canonical payload's
+evidence includes rejected
 (`validation == 0`) candidates alongside accepted ones, because MKF's judge
 prompt reads the full validated pool; see `README.md` for which metric uses
 which subset.

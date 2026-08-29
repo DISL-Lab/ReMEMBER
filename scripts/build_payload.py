@@ -39,6 +39,11 @@ split RCV rows). MKF's own gap filter is looser in isolation (any row with
 non-empty `validated`, which literally includes the 2 empty-target rows), but
 this release keeps one gap set across MR, MKF, and the v1 index rather than a
 third, MKF-only population.
+
+`gap_reason` is a concatenation of per-model rationales
+(`[gemma] ... | [GLM] ... | [Qwen] ...`). The reasoning text is released; the
+`[model_name]` tags are stripped, since the annotator's identity is not part of
+the released criterion.
 """
 import argparse, gzip, json, re, sys
 from pathlib import Path
@@ -76,6 +81,22 @@ def shift_sentence(source_id):
         return None
     turn, _, sentence = source_id.rpartition("-S")
     return f"{turn}-S{int(sentence) + 1}" if sentence.isdigit() else None
+
+
+_ANNOTATOR_TAG = re.compile(r"^\[[^\]]+\]\s*")
+
+
+def strip_annotator_names(gap_reason):
+    """Remove the leading `[model_name]` tag from each pipe-separated segment.
+
+    The raw field is a concatenation of per-model rationales
+    (`[gemma] ... | [GLM] ... | [Qwen] ...`); the reasoning text is released,
+    the annotator model identity is not.
+    """
+    if not gap_reason:
+        return gap_reason
+    return " | ".join(_ANNOTATOR_TAG.sub("", segment).strip()
+                      for segment in gap_reason.split(" | "))
 
 
 def normalized_turns(turns):
@@ -162,7 +183,7 @@ def main():
                 "target_sentence_numbers": row.get("sentence_numbers")
                                            or row.get("target_sentence_numbers") or [],
                 "target_sentence": row.get("target_sentence", ""),
-                "gap_reason": row.get("gap_reason", ""),
+                "gap_reason": strip_annotator_names(row.get("gap_reason", "")),
                 "evidence": candidates,
             })
             stats["candidates"] += len(candidates)

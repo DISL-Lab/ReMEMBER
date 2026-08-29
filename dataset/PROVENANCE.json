@@ -10,7 +10,7 @@
       },
       "path": "remember_900.jsonl.gz",
       "record_schema_version": "2.0",
-      "sha256": "aacc984848440f6a8a5268106c3f84bd8a672235712b24d75de45fac90df62b5"
+      "sha256": "7cdfc045c81475debe3f4e1242666ce87f8ad1a980c71d3cdbbd79f3d76fb588"
     },
     "split": {
       "path": "splits/main_900.txt",
@@ -56,6 +56,10 @@
     "note": "format_gap_cases's own literal filter (any row with non-empty validated) would include 2 more rows whose target_sentence is empty; this release keeps one gap set across MR, MKF, and v1 rather than a third, MKF-only population",
     "rule": "target_sentence non-empty, matching release.sanitize_annotations and the v1 index",
     "value": 1498
+  },
+  "gap_reason_policy": {
+    "released": "the reasoning text only; leading [model_name] tags are stripped",
+    "source": "concatenation of per-model rationales in the RCV field"
   },
   "schema_version": "1.0",
   "segmentation": {

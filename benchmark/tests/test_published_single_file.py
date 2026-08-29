@@ -17,7 +17,7 @@ import pytest
 
 DATASET = Path(__file__).parents[2] / "dataset"
 PAYLOAD = DATASET / "remember_900.jsonl.gz"
-PAYLOAD_SHA256 = "aacc984848440f6a8a5268106c3f84bd8a672235712b24d75de45fac90df62b5"
+PAYLOAD_SHA256 = "7cdfc045c81475debe3f4e1242666ce87f8ad1a980c71d3cdbbd79f3d76fb588"
 
 EXPECTED_COUNTS = {
     "windows": 900, "gaps": 1498,
@@ -137,3 +137,12 @@ def test_provenance_file_matches_the_shipped_artifacts(rows):
     assert provenance["artifacts"]["split"]["sha256"] == hashlib.sha256(
         (DATASET / "splits/main_900.txt").read_bytes()).hexdigest()
     assert (DATASET.parent / provenance["builder"]).is_file()
+
+
+def test_gap_reason_carries_no_annotator_model_identity(rows):
+    import re
+    tag = re.compile(r"^\[(gemma|GLM|Qwen)\]")
+    for row in rows:
+        for gap in row["gaps"]:
+            for segment in gap["gap_reason"].split(" | "):
+                assert not tag.match(segment.strip()), (row["window_id"], gap["gap_idx"])

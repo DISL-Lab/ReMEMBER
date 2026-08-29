@@ -104,10 +104,12 @@ all.
 - 11 `salient_utterances[].sentences` entries are **empty strings.** The
   canonical evaluator does not filter them either — it renders them as a real,
   necessarily-uncoverable prompt line and counts them in the WKF denominator.
-- `gap_reason` is the **concatenated per-model rationale** carried over from
-  annotation. It names the annotator models, can contain dissenting judgments,
-  and is occasionally truncated. Treat it as provenance, not as a single
-  adjudicated criterion.
+- `gap_reason` is a **concatenation of per-model rationales**
+  (`reason A. | reason B. | reason C.`), carried over from annotation and
+  occasionally truncated or containing dissenting judgments. The leading
+  `[model_name]` tag on each segment is stripped — the reasoning is released,
+  the annotator model's identity is not. Treat it as provenance, not as a
+  single adjudicated criterion.
 - Gaps are filtered to a non-empty `target_sentence` (1,498 of 1,500 split RCV
   rows), matching the v1 index. MKF's own gap filter, read in isolation, is
   looser — it would include those 2 empty-target rows too — but this release
