@@ -217,7 +217,10 @@ def validate_benchmark_row(row: Mapping[str, Any], location: str) -> None:
         _require(isinstance(item, dict), f"{where} must be an object")
         sentences = item.get("sentences")
         _require(isinstance(sentences, list) and bool(sentences), f"{where}.sentences must be non-empty")
-        _require(all(isinstance(s, str) and s.strip() for s in sentences), f"{where}.sentences must be text")
+        # The canonical evaluator does not filter blank annotation text either
+        # (format_salient_utterances renders it as a real, uncoverable prompt
+        # line), so an empty string is allowed here; only the type is enforced.
+        _require(all(isinstance(s, str) for s in sentences), f"{where}.sentences must be text")
 
     gaps = row.get("gaps")
     _require(isinstance(gaps, list), f"{location}.gaps must be an array")
@@ -230,8 +233,7 @@ def validate_benchmark_row(row: Mapping[str, Any], location: str) -> None:
         _require(gap_idx not in seen_gap_ids, f"{where}: duplicate gap_idx")
         seen_gap_ids.add(gap_idx)
         target = gap.get("target_sentence")
-        _require(isinstance(target, list) and bool(target), f"{where}.target_sentence must be non-empty")
-        _require(all(isinstance(s, str) and s.strip() for s in target), f"{where}.target_sentence must be text")
+        _require(isinstance(target, str) and target.strip(), f"{where}.target_sentence must be non-empty text")
         evidence = gap.get("evidence")
         _require(isinstance(evidence, list), f"{where}.evidence must be an array")
         for item_index, item in enumerate(evidence):
@@ -240,6 +242,9 @@ def validate_benchmark_row(row: Mapping[str, Any], location: str) -> None:
             _require(isinstance(item.get("source_id"), str), f"{item_where}.source_id must be a string")
             _require(isinstance(item.get("sentence"), str) and item["sentence"].strip(),
                      f"{item_where}.sentence must be text")
+            # MR keeps only validation==1 evidence, MKF keeps every candidate
+            # (see render_mr_gaps / render_gap_cases), so both values must survive.
+            _require(item.get("validation") in (0, 1), f"{item_where}.validation must be 0 or 1")
 
 
 def load_benchmark(path: Path) -> BenchmarkInput:
@@ -800,22 +805,23 @@ def mr_gap_id(gap: Mapping[str, Any]) -> str:
     return f"gap_{gap['gap_idx']}"
 
 
-def _joined_target(gap: Mapping[str, Any]) -> str:
-    """The annotation's target sentence as one string, as the judge prompts expect."""
-    return " ".join(gap["target_sentence"])
-
-
 def render_mr_gaps(gaps: Sequence[Mapping[str, Any]]) -> str:
-    """Exactly the GAP item the canonical memory-recall evaluator builds."""
+    """Exactly the GAP item the canonical memory-recall evaluator builds.
+
+    MR keeps only validation==1 evidence (load_pw_from_rcv); MKF's
+    render_gap_cases keeps every candidate. The released schema carries both,
+    tagged by `validation`, so each renderer applies its own filter.
+    """
     payload = [
         {
             "gap_id": mr_gap_id(gap),
-            "salient_utterance": _joined_target(gap),
+            "salient_utterance": gap["target_sentence"],
             "gap_type": gap.get("gap_type", ""),
             "gap_reason": gap.get("gap_reason", ""),
             "supporting_sentences": [
                 {"source_id": item["source_id"], "text": item["sentence"]}
                 for item in gap.get("evidence", [])
+                if item.get("validation") == 1
             ],
             "supporting_reasoning": gap.get("gap_reason", ""),
         }
@@ -832,7 +838,9 @@ def render_gap_cases(gaps: Sequence[Mapping[str, Any]]) -> str:
     """Exactly the G# block the canonical coverage evaluator builds.
 
     `utterance_num` is the gap's position in the released gap list, which is what
-    the canonical builder emits when every row carries validated evidence.
+    the canonical builder emits when every row carries validated evidence. Unlike
+    MR, this joins every evidence candidate regardless of `validation`
+    (format_relevant_chunk_from_validated has no validation filter).
     """
     blocks = []
     for index, gap in enumerate(gaps):
@@ -840,7 +848,7 @@ def render_gap_cases(gaps: Sequence[Mapping[str, Any]]) -> str:
         blocks.append(
             f"G{index}:\n"
             f"- utterance_num: U{index}\n"
-            f"- salient_utterance: {_joined_target(gap)}\n"
+            f"- salient_utterance: {gap['target_sentence']}\n"
             f"- gap_type: {gap.get('gap_type', '')}\n"
             f"- relevant_chunk: {chunk}"
         )

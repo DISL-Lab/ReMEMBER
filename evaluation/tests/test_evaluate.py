@@ -917,7 +917,12 @@ def test_mr_gap_item_matches_the_canonical_shape():
 
 
 def test_mkf_gap_case_block_matches_the_canonical_shape():
-    """Layout as the canonical coverage evaluator builds it."""
+    """Layout as the canonical coverage evaluator builds it.
+
+    Unlike MR, MKF's relevant_chunk includes every evidence candidate
+    (fixture gap_0 has one validation=0 item), matching
+    format_relevant_chunk_from_validated's lack of a validation filter.
+    """
     row = ev.load_benchmark(BENCHMARK).rows[0]
     blocks = ev.render_gap_cases(row["gaps"]).split("\n\n")
     assert blocks[0] == (
@@ -926,10 +931,20 @@ def test_mkf_gap_case_block_matches_the_canonical_shape():
         "- salient_utterance: She will finish it before the deadline.\n"
         "- gap_type: C\n"
         "- relevant_chunk: The migration deadline is March 14.\n"
-        "Ada owns the billing service."
+        "Ada owns the billing service.\n"
+        "We rejected the queue-based design."
     )
     # G# is positional, and gap_3 becomes G1/U1 - never gap_idx 3.
     assert blocks[1].startswith("G1:\n- utterance_num: U1\n")
+
+
+def test_mr_excludes_validation_zero_candidates_that_mkf_includes():
+    """The same fixture's rejected T2-S1 candidate: absent from MR, present in MKF."""
+    row = ev.load_benchmark(BENCHMARK).rows[0]
+    mr_ids = {item["source_id"] for item in json.loads(ev.render_mr_gaps(row["gaps"]))[0]
+             ["supporting_sentences"]}
+    assert mr_ids == {"T0-S1", "T1-S1"}
+    assert "We rejected the queue-based design." in ev.render_gap_cases(row["gaps"])
 
 
 def test_wkf_lines_match_the_canonical_shape():

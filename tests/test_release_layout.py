@@ -53,7 +53,7 @@ def _tiny_dataset(root: Path) -> Path:
                                 "sentences": ["She will finish before it."],
                                 "gap_type": "C", "vote_count": 2}],
         "gaps": [{"gap_idx": 0, "target_sentence_numbers": [0],
-                  "target_sentence": ["She will finish before it."], "gap_type": "C",
+                  "target_sentence": "She will finish before it.", "gap_type": "C",
                   "gap_reason": "Identify the deadline.",
                   "evidence": [{"source_id": "T0-S1", "sentence": "The deadline is March 14.",
                                 "status": "resolve", "validation": 1, "vote_count": 2,
@@ -413,7 +413,8 @@ def test_a_corrupt_or_missing_payload_is_reported(tmp_path):
 def test_the_checked_in_payload_has_the_released_population():
     summary = validator.scan_release(ROOT)
     assert summary["dataset"]["payload"]["counts"] == {
-        "windows": 900, "gaps": 1498, "evidence": 4134, "salient_utterances": 7245}
+        "windows": 900, "gaps": 1498, "evidence_candidates": 8450,
+        "evidence_validated": 4135, "salient_utterances": 7245}
     assert summary["dataset"]["index"]["counts"] == {
         "windows": 900, "gaps": 1498, "evidence": 4135}
 
@@ -427,7 +428,7 @@ def test_payload_counts_are_enforced_for_a_canonical_sized_split(tmp_path):
     _write_payload(dataset, [dict(template, window_id=item) for item in ids])
     failures = _payload_failures(tmp_path)
     assert "payload counts" in failures
-    assert "'evidence': 900" in failures and "'evidence': 4134" in failures
+    assert "'gaps': 900" in failures and "'evidence_validated': 4135" in failures
 
 
 def test_the_payload_is_scanned_for_leaks_despite_the_utf8_exemption(tmp_path):

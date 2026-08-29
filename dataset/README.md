@@ -15,50 +15,54 @@ required to use it:
 | `tok_start`, `tok_end` | the window's token span in its dialogue |
 | `history[]` | every prior turn, with `turn_index`, `time`, `speaker`, `dialogue` |
 | `turns[]` | the current window's turns, same shape |
-| `salient_utterances[]` | flattened WKF units: `sentence_numbers`, resolved `sentences`, `gap_type`, `vote_count` |
-| `gaps[]` | `gap_idx`, `target_sentence_numbers`, resolved `target_sentence`, `gap_type`, `gap_reason`, and `evidence[]` |
-| `gaps[].evidence[]` | `source_id`, the resolved `sentence`, `status`, `validation`, `vote_count`, per-model `votes` |
+| `salient_utterances[]` | flattened WKF units: `sentence_numbers`, `sentences`, `gap_type`, `vote_count` |
+| `gaps[]` | `gap_idx`, `target_sentence_numbers`, `target_sentence` (a string), `gap_type`, `gap_reason`, and `evidence[]` |
+| `gaps[].evidence[]` | `source_id`, `sentence`, `status`, `validation` (0 or 1), `vote_count`, per-model `votes` |
 
-Released population: **900 windows, 1,498 gaps, 4,134 validated evidence links,
-7,245 flattened salient utterances.**
+Released population: **900 windows, 1,498 gaps, 8,450 evidence candidates
+(4,135 with `validation == 1`), 7,245 flattened salient utterances.**
 
-### Coordinates and how the text was resolved
+### Design rule: publish exactly the strings the judges read
 
-`target_sentence_numbers` are zero-based indices into the flattened current
-window. `source_id` is `T{turn}-S{sentence}` with zero-based history turns and
-one-based sentences.
+Every `sentence` in `gaps[].evidence[]` and every string in
+`salient_utterances[].sentences` is the recorded annotation text, byte-identical
+to what the paper's canonical evaluators consumed — never a paraphrase, and
+never re-derived from a sentence-splitter coordinate. `target_sentence` is
+likewise the annotation's own string.
 
-The annotations were produced over two different segmentations, and this
-release resolves each coordinate with the segmentation it was annotated under:
+### Evidence carries both accepted and rejected candidates — on purpose
 
-- current-window targets and salient utterances: NLTK punkt over the raw turn text;
-- history evidence: emoji removal, then NLTK punkt, per turn.
+`gaps[].evidence[]` includes every candidate the validators scored, tagged by
+its `validation` value (0 = rejected, 1 = accepted), because MR and MKF read
+this list differently:
 
-Because the resolved text is baked into every record, consumers never have to
-reproduce either splitter.
+- **MR** (memory recall) uses only `validation == 1` candidates.
+- **MKF** (memory-knowledge faithfulness) uses every candidate with non-empty
+  text, rejected ones included — its judge prompt shows the full pool the
+  validators saw, not just what passed.
 
-Two corrections were applied and are worth knowing about:
+Every gap has at least one `validation == 1` candidate, so both metrics are
+always computable. Filter by `validation` yourself if you only want the
+accepted subset (4,135 candidates, exactly matching the v1 index below).
 
-1. **Off-by-one evidence coordinates.** 132 validated coordinates are shifted by
-   one sentence: the text the annotation recorded sits at `S+1`. This is not
-   confined to literal `S0` indices — it occurs in whole turn blocks starting at
-   any index. Each was corrected to `S+1` **only when the shifted coordinate
-   resolves to the recorded text exactly**, so every correction is verified
-   rather than inferred. No coordinate needed a shift in any other direction.
-2. **One dropped evidence link.** `R_U0774` gap 0 `T728-S3` addresses a sentence
-   that does not exist under any offset. It is the entire difference between this
-   file's 4,134 evidence links and the v1 index's 4,135. Gaps are identical in
-   both views (1,498).
+### `source_id` corrections
 
-After these corrections 4,103 of the 4,135 links carry text identical to what the
-annotation recorded. The remaining 31 differ because the recorded string is a
-model echo — markdown stripped, an `@all` prefix dropped, or truncated to `...` —
-and the released text is the real dialogue sentence the coordinate points at.
+`source_id` is `T{turn}-S{sentence}`, zero-based history turns and one-based
+sentences, over the segmentation the evidence coordinates were annotated
+under (emoji removal, then NLTK punkt, per turn). 424 coordinates across the
+full candidate pool were shifted by one sentence — the recorded text sits at
+`S+1`, in whole turn blocks starting at any index, not only literal `S0`. A
+coordinate was corrected only when the shifted value resolves to the recorded
+text **exactly**, so every correction is verified, never inferred. The
+correction only ever moves `source_id`; the shipped `sentence` text is always
+the original recorded string, unchanged. 99 candidates' coordinates still do
+not resolve under either offset — they ship with their original `source_id`
+and their recorded text, unchanged; the coordinate is uncertain, the text is
+not.
 
-The `sentence` strings recorded alongside coordinates in the upstream research
-artifacts are model echoes — sometimes paraphrased, emoji-stripped, or truncated
-to `...`. They were **not** used as released text; every released sentence comes
-from resolving the coordinate against the dialogue.
+`gap_idx not resolving` and `evidence text not matching its own coordinate` are
+therefore two different, unrelated things: consumers who don't care about
+`source_id` provenance can ignore this section entirely.
 
 ## `annotations/remember_900_annotations.jsonl` — the v1 text-free index
 
@@ -97,12 +101,18 @@ all.
   7,245 entries repeat a coordinate already present in the same window, and 26
   of those repeats carry a different `gap_type`. A scorer that iterates the list
   weights such a sentence more than once; that is the paper's denominator.
+- 11 `salient_utterances[].sentences` entries are **empty strings.** The
+  canonical evaluator does not filter them either — it renders them as a real,
+  necessarily-uncoverable prompt line and counts them in the WKF denominator.
 - `gap_reason` is the **concatenated per-model rationale** carried over from
   annotation. It names the annotator models, can contain dissenting judgments,
   and is occasionally truncated. Treat it as provenance, not as a single
   adjudicated criterion.
-- Punkt occasionally splits a numbered list into a fragment, so a handful of
-  released sentences are as short as `"2."`.
+- Gaps are filtered to a non-empty `target_sentence` (1,498 of 1,500 split RCV
+  rows), matching the v1 index. MKF's own gap filter, read in isolation, is
+  looser — it would include those 2 empty-target rows too — but this release
+  keeps one gap set across MR, MKF, and v1 rather than a third, MKF-only
+  population.
 
 ## Provenance
 

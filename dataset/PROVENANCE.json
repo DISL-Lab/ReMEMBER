@@ -2,14 +2,15 @@
   "artifacts": {
     "payload": {
       "counts": {
-        "evidence": 4134,
+        "evidence_candidates": 8450,
+        "evidence_validated": 4135,
         "gaps": 1498,
         "salient_utterances": 7245,
         "windows": 900
       },
       "path": "remember_900.jsonl.gz",
       "record_schema_version": "2.0",
-      "sha256": "d5404512111703e03ed5df8a61c69a7094b4a78393ec7b21c01b9841b86a25d3"
+      "sha256": "aacc984848440f6a8a5268106c3f84bd8a672235712b24d75de45fac90df62b5"
     },
     "split": {
       "path": "splits/main_900.txt",
@@ -39,18 +40,26 @@
     "salient": "e65ed00720cb8bd6ce7e576f0e8f53c966423625da5ca6a8017158762994ebf2",
     "windows": "867534724b6c73800e815f8e5d8e0c5426a39662c210c143fd7bece655cfe4ec"
   },
+  "canonical_evaluator_asymmetry": {
+    "mkf": "the canonical coverage evaluator's format_relevant_chunk_from_validated keeps every candidate with non-empty text, regardless of validation",
+    "mr": "the canonical memory-recall evaluator's load_pw_from_rcv keeps only validation==1 candidates",
+    "released_schema": "every candidate ships once, tagged by `validation`; the evaluator's two renderers apply their own filter"
+  },
   "corrections": {
-    "dropped_evidence_links": [
-      "R_U0774 gap 0 T728-S3"
-    ],
-    "evidence_text_differing_as_model_echo": 31,
-    "evidence_text_identical_to_annotation_record": 4103,
+    "note": "these candidates ship with their original source_id and recorded text unchanged; the coordinate is uncertain but the text is not",
     "shift": "+1 sentence, adopted only when the shifted coordinate resolves to the recorded text exactly",
-    "shifted_evidence_coordinates": 132
+    "source_ids_not_matching_recorded_text": 99,
+    "source_ids_shifted": 424
+  },
+  "design_rule": "Publish exactly the strings the canonical evaluators read from validated[].sentence and salient[].sentences; never re-derive text from a coordinate.",
+  "gap_denominator": {
+    "note": "format_gap_cases's own literal filter (any row with non-empty validated) would include 2 more rows whose target_sentence is empty; this release keeps one gap set across MR, MKF, and v1 rather than a third, MKF-only population",
+    "rule": "target_sentence non-empty, matching release.sanitize_annotations and the v1 index",
+    "value": 1498
   },
   "schema_version": "1.0",
   "segmentation": {
-    "evidence": "emoji removal then nltk punkt, per turn, one-based",
-    "target_and_salient": "nltk punkt over raw dialogue, flattened, zero-based"
+    "evidence_coordinates": "emoji removal then nltk punkt, per turn, one-based",
+    "purpose": "verifies a source_id correction only; never used to derive shipped text"
   }
 }

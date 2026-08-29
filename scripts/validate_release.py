@@ -47,7 +47,8 @@ FORBIDDEN_PAYLOAD_KEYS = {
     "media", "media_url", "url", "urls", "raw_output", "reasoning", "reasons",
 }
 EXPECTED_PAYLOAD_COUNTS = {
-    "windows": 900, "gaps": 1498, "evidence": 4134, "salient_utterances": 7245,
+    "windows": 900, "gaps": 1498, "evidence_candidates": 8450, "evidence_validated": 4135,
+    "salient_utterances": 7245,
 }
 
 
@@ -184,11 +185,13 @@ def _payload_integrity(path: Path, root: Path) -> list[str]:
         return failures + [f"unreadable split: {exc}"]
     if [row.get("window_id") for row in rows] != split_ids:
         failures.append(f"payload window order does not match the ordered split: {relative}")
+    all_evidence = [item for row in rows for gap in row.get("gaps") or []
+                    for item in gap.get("evidence") or []]
     counts = {
         "windows": len(rows),
         "gaps": sum(len(row.get("gaps") or []) for row in rows),
-        "evidence": sum(len(gap.get("evidence") or [])
-                        for row in rows for gap in row.get("gaps") or []),
+        "evidence_candidates": len(all_evidence),
+        "evidence_validated": sum(1 for item in all_evidence if item.get("validation") == 1),
         "salient_utterances": sum(len(row.get("salient_utterances") or []) for row in rows),
     }
     if len(split_ids) == EXPECTED_PAYLOAD_COUNTS["windows"] and counts != EXPECTED_PAYLOAD_COUNTS:
@@ -350,11 +353,13 @@ def _dataset_summary(root: Path) -> dict[str, Any]:
     if payload.is_file():
         with gzip.open(payload, "rt", encoding="utf-8") as handle:
             payload_rows = [json.loads(line) for line in handle if line.strip()]
+        payload_evidence = [item for row in payload_rows for gap in row.get("gaps") or []
+                            for item in gap.get("evidence") or []]
         payload_counts = {
             "windows": len(payload_rows),
             "gaps": sum(len(row.get("gaps") or []) for row in payload_rows),
-            "evidence": sum(len(gap.get("evidence") or [])
-                            for row in payload_rows for gap in row.get("gaps") or []),
+            "evidence_candidates": len(payload_evidence),
+            "evidence_validated": sum(1 for item in payload_evidence if item.get("validation") == 1),
             "salient_utterances": sum(len(row.get("salient_utterances") or [])
                                       for row in payload_rows),
         }
@@ -464,7 +469,7 @@ def _evaluation_smoke(temp: Path) -> dict[str, Any]:
                                 "sentences": ["She will finish before it."],
                                 "gap_type": "C", "vote_count": 3}],
         "gaps": [{"gap_idx": 0, "target_sentence_numbers": [0],
-                  "target_sentence": ["She will finish before it."], "gap_type": "C",
+                  "target_sentence": "She will finish before it.", "gap_type": "C",
                   "gap_reason": "Identify the deadline.",
                   "evidence": [{"source_id": "T0-S1", "sentence": "The deadline is March 14.",
                                 "status": "resolve", "validation": 1, "vote_count": 3,

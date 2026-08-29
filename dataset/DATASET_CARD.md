@@ -3,17 +3,22 @@
 ## Two views of one release
 
 - **`remember_900.jsonl.gz` (canonical).** Self-contained: every record carries
-  its own dialogue history, current window, gold gaps, resolved evidence
-  sentences, and salient utterances. Population: 900 windows, 1,498 gaps, 4,134
-  validated evidence links, 7,245 flattened salient utterances. This is what the
-  evaluator reads.
+  its own dialogue history, current window, gold gaps, every evidence candidate
+  (accepted and rejected, tagged by `validation`), and salient utterances.
+  Population: 900 windows, 1,498 gaps, 8,450 evidence candidates (4,135 with
+  `validation == 1`), 7,245 flattened salient utterances. Every string is the
+  recorded annotation text, never re-derived from a coordinate. This is what
+  the evaluator reads; MR and MKF each apply their own filter to the same
+  evidence list.
 - **`annotations/remember_900_annotations.jsonl` (v1 compatibility index).** The
   original coordinate-only view, byte-for-byte unchanged, described below.
 
-The two differ by exactly one evidence link: `R_U0774` gap 0 `T728-S3`, whose
-coordinate addresses a sentence that does not exist under any offset. Gaps are
-identical in both. See
-[`README.md`](README.md) for how each coordinate was resolved to text.
+The gap set is identical between the two. The `validation == 1` subset of the
+canonical payload's evidence exactly matches v1's 4,135 evidence links (v1
+predates the `source_id` corrections and is frozen, so a handful of individual
+coordinates differ while the set of validated candidates is the same). See
+[`README.md`](README.md) for the coordinate corrections and the MR/MKF filter
+asymmetry.
 
 The canonical payload carries upstream dialogue verbatim (823,384 turns,
 ~192M characters, byte-identical to the source apart from windowing), not a
@@ -75,9 +80,10 @@ Both views retain source-derived labels and model-vote metadata, which may
 reflect annotation and model biases. `gap_reason` is the concatenated per-model
 gap rationale carried over from annotation, so it names the annotator models and
 can contain dissenting judgments; treat it as provenance, not as a single
-adjudicated criterion. 31 released evidence sentences differ from the string the
-annotation recorded because that string was a model echo; the released text is
-the dialogue sentence the coordinate points at.
+adjudicated criterion. The canonical payload's evidence includes rejected
+(`validation == 0`) candidates alongside accepted ones, because MKF's judge
+prompt reads the full validated pool; see `README.md` for which metric uses
+which subset.
 
 ## License
 
