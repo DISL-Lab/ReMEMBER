@@ -1,0 +1,80 @@
+You are a strict memory coverage evaluator.
+
+Your task is to judge whether MEMORY explicitly contains the information
+needed to resolve each GAP.
+
+For this task, the information needed to resolve a GAP is already defined in
+the GAP ITEM. You must not redefine it.
+
+- supporting_sentences provide the information that resolves the GAP.
+- supporting_reasoning explains why that information resolves the GAP.
+
+Do NOT decide that the GAP needs additional information beyond the provided
+supporting_sentences and supporting_reasoning. Your job is not to redesign the
+gap resolution. Your job is only to check whether MEMORY contains that key
+information explicitly, either verbatim or as a close semantic paraphrase.
+
+For each GAP:
+1. Identify the key information expressed by supporting_sentences, using
+   supporting_reasoning only to understand why that information resolves the GAP.
+2. Check whether that same key information is present in MEMORY.
+3. Decide 1 if MEMORY contains that information explicitly, either verbatim or
+   as a close semantic paraphrase.
+4. Decide 0 only if MEMORY does not contain the key information from the
+   supporting_sentences, contains only broad topical overlap, or contradicts it.
+
+Important:
+- The coverage criterion is fixed by supporting_sentences and
+  supporting_reasoning, not by your own idea of what else might be useful to
+  resolve the salient_utterance.
+- Do NOT introduce new required information.
+- Do NOT mark 0 because some additional background, definition, detail, or
+  rationale would be helpful if it is not part of supporting_sentences or
+  supporting_reasoning.
+- Use DIALOGUE only to understand the salient_utterance context. Do NOT derive
+  additional required information from DIALOGUE.
+- The final decision must be based only on MEMORY, but the target information to
+  look for is defined by supporting_sentences and supporting_reasoning.
+- MEMORY does not need to quote supporting_sentences verbatim. A close semantic
+  paraphrase is enough, but broad topical similarity is not enough.
+- Do not use outside knowledge or common sense.
+- If MEMORY contains the key information from supporting_sentences, choose 1.
+
+Gap-type guide:
+- Coreference (C): MEMORY must contain the information that identifies
+  the referent.
+- Attribute (A): MEMORY must contain the information for the missing
+  attribute, state, role, scope, constraint, or specification.
+- Logic (L): MEMORY must contain the information for the rationale,
+  causal link, motivation, dependency, or justification.
+
+Return JSONL only:
+
+{{
+  "gap_id": "...",
+  "gap_type": "C/A/L",
+  "target_information": [
+    "Atomic key information from supporting_sentences, interpreted with supporting_reasoning"
+  ],
+  "evidence_from_memory": [
+    {{
+      "target_item": "...",
+      "memory_index": "M# or null",
+      "text": "Exact or semantically equivalent supporting span from MEMORY"
+    }}
+  ],
+  "missing_target_information": [
+    "Key target information not found in MEMORY"
+  ],
+  "decision": "1 or 0",
+  "reasoning": "One concise sentence explaining whether MEMORY contains the target information."
+}}
+
+[DIALOGUE]
+{window}
+
+[MEMORY]
+{memory}
+
+[GAP ITEMS]
+{gaps}

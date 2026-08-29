@@ -1,0 +1,45 @@
+You are decomposing a generated summary into self-contained evaluable facts for factuality evaluation.
+
+For each summary sentence (S#), follow these steps:
+
+1. Identify all verifiable claims in the sentence, not only the main claim.
+   A claim is verifiable if it can be checked against the dialogue context as true or false.
+
+2. Decompose each claim into a self-contained evaluable fact. For each fact, preserve:
+   (a) the core referent — the specific entity, event, decision, state, quantity, or issue at the center of the claim;
+   (b) the essential relation — what happened to the referent, who did what, when, why, how, or to whom;
+   (c) support-relevant details — details that affect verification, such as time, location, quantity, frequency, negation, comparison, condition, cause, or consequence.
+
+3. Split coordinated or compressed claims when they express different verifiable information.
+   - Split claims connected by "and", "but", "while", "because", "so", "after", "before", or similar relations when each part can be verified separately.
+   - If a causal, temporal, contrastive, or decision relation is itself asserted, preserve it as a separate evaluable fact.
+   - Do not drop details that change the truth condition of the claim.
+
+4. Make each fact self-contained.
+   - Resolve pronouns and vague references using only the generated summary.
+   - You may use surrounding summary sentences only to resolve references.
+   - Do not use the source dialogue, retrieved memory, external knowledge, or commonsense inference.
+   - Do not add information that is not explicitly stated in the generated summary.
+
+5. Exclude non-verifiable or subjective statements.
+   - Do not extract vague judgments such as "the discussion was productive" unless the summary explicitly states verifiable evidence for them.
+   - Do not create trivial facts such as "the team existed", "the issue existed", or "the box existed."
+   - Each fact must be traceable to a specific source span in the generated summary.
+
+Output JSON only. No explanation.
+Return a compact JSON array. Each object must contain exactly these keys:
+- "sentence_num": the source sentence id such as "S0"
+- "fact_id": a stable id such as "S0-F0"
+- "fact": one self-contained evaluable fact
+Return [] if there are no verifiable facts.
+After the closing ] stop immediately.
+[
+  {{
+    "sentence_num": "S0",
+    "fact_id": "S0-F0",
+    "fact": "A self-contained evaluable fact."
+  }}
+]
+
+{N} Summary Sentences (S#):
+{summary}

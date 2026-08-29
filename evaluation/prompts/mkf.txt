@@ -1,0 +1,117 @@
+For each gap case (G#), evaluate whether the summary recovers the missing context.
+
+Goal:
+Reward the summary only if it contains the specific missing context from relevant_chunk that is absent from salient_utterance.
+Do NOT reward the summary for merely covering the same event, topic, relationship, preference, plan, project, document, task, or broad narrative.
+
+For each gap case (G#), follow these steps:
+
+1. Identify the exact gap in the salient_utterance.
+   Write one concrete question Q that asks for the missing antecedent, referent, source, target, object, decision, time, quantity, or relation.
+   Q must be answerable only by using relevant_chunk, not by using salient_utterance alone.
+
+2. Select exactly one gap-resolving fact F from relevant_chunk.
+   F must be the minimal fact that directly answers Q.
+   F must satisfy ALL of the following:
+   (a) Directness: F resolves the exact missing information in salient_utterance. Do not choose a related fact just because it appears in the summary.
+   (b) Core referent: F includes the specific entity, event, decision, document, person, date, quantity, or object that answers Q.
+   (c) Essential relation: F includes the role this referent plays (who did what, when, why, to whom, about what, or based on what).
+   (d) Novelty: F is not already lexically or semantically present in salient_utterance. If the summary could be written using only salient_utterance without reading relevant_chunk, score 0.0.
+   (e) Minimality: F should not be a broad summary of relevant_chunk. It should be the smallest fact needed to fill the gap.
+
+   If relevant_chunk contains multiple possible facts, choose the one that most directly fills the missing slot in salient_utterance.
+   Do not choose an alternative fact merely because the summary mentions it.
+   Do not use "OR" facts. Pick one F.
+
+3. Decide whether the summary alone contains F.
+   The reader sees only the summary, not relevant_chunk and not salient_utterance.
+
+   Apply ALL tests. Any single failure -> score 0.0.
+
+   T1. Exact gap coverage:
+       Does the summary answer Q with the same F selected from relevant_chunk?
+
+   T2. Referent + relation:
+       Does at least one cited summary sentence explicitly contain both the core referent and the essential relation?
+       If the summary mentions only the referent, or only a related action, score 0.0.
+
+   T3. Fidelity:
+       The summary's answer to Q must match relevant_chunk. If it gives a different plausible answer, different participant, different object, different time, or different relation, score 0.0.
+
+   T4. Anti-echo:
+       If the summary only restates the salient_utterance's topic, category, or already-known referent without adding F from relevant_chunk, score 0.0.
+
+   T5. Anti-narrative:
+       If the summary only states that an event, conversation, relationship, preference, routine, trip, health issue, project, task, meeting, document, decision, or implementation happened, but does not recover the missing concrete context required by Q, score 0.0.
+
+   T6. Specificity:
+       Generic role mentions such as "they", "someone", "the friend", "the family member", "the place", "the thing", "the plan", "the issue", "the team", "the project", "the document", "the solution", or "the requirements" do not count unless they uniquely identify the same concrete referent and relation as F.
+
+   T7. No outside knowledge:
+       Do not use commonsense, world knowledge, or assumptions to bridge missing information. F must be directly recoverable from summary text.
+
+Scores (binary):
+- 1.0: The summary explicitly recovers the selected F, including both the specific referent and essential relation, and the cited summary sentence(s) support it.
+- 0.0: Any test fails, no valid F exists, the summary is silent on Q, the summary only covers the broad narrative, the summary only echoes salient_utterance, or the summary contradicts F.
+
+Examples (illustrative, do NOT copy verbatim):
+
+Example A — score 1.0 (personal plan)
+  salient_utterance: "I finally booked it for next Friday."
+  relevant_chunk: "Maya said she wanted to celebrate her birthday at the small Thai place near the river because it has vegan options."
+  Q: What was booked for next Friday?
+  F: "Maya's birthday celebration at the small Thai place near the river"
+  summary contains: "the speaker booked Maya's birthday dinner at the riverside Thai restaurant for next Friday"
+  score: 1.0
+
+Example B — score 0.0 (wrong answer)
+  salient_utterance: "He said that was the reason he stopped going."
+  relevant_chunk: "Daniel stopped going to the climbing gym after he hurt his wrist during a bouldering class."
+  Q: Why did Daniel stop going?
+  F: "Daniel stopped going to the climbing gym because he hurt his wrist during a bouldering class"
+  summary contains: "Daniel stopped going because the membership became too expensive"
+  score: 0.0
+
+Example C — score 0.0 (salient echo)
+  salient_utterance: "I made sure to avoid it when I cooked for her."
+  relevant_chunk: "Nina is allergic to walnuts, but almonds and cashews are fine."
+  Q: What did the speaker avoid when cooking for Nina?
+  F: "walnuts, because Nina is allergic to them"
+  summary contains: "the speaker cooked carefully for Nina and avoided an ingredient"
+  score: 0.0
+
+Example D — score 0.0 (broad narrative)
+  salient_utterance: "That place is why I want to go back in June."
+  relevant_chunk: "When we visited Kyoto last spring, the quiet garden behind Nanzen-ji was Elena's favorite stop."
+  Q: Which place made the speaker want to go back in June?
+  F: "the quiet garden behind Nanzen-ji in Kyoto"
+  summary contains: "the conversation described a memorable previous trip and a desire to return"
+  score: 0.0
+
+Example E — score 1.0 (work/domain case)
+  salient_utterance: "This task can be closed today."
+  relevant_chunk: "Today is the last day for the platform's microservice architecture diagram review."
+  Q: Which task can be closed today?
+  F: "the platform's microservice architecture diagram review can be closed today"
+  summary contains: "the platform's microservice architecture diagram review was completed and closed today"
+  score: 1.0
+
+Output JSON only. No explanation.
+[
+  {{
+    "gap_num": "G0",
+    "utterance_num": "U0",
+    "question": "What concrete missing information is required?",
+    "selected_F": "The minimal fact from relevant_chunk that directly answers the question.",
+    "score": 1.0,
+    "line_number": ["S1", "S4"]
+  }},
+  ...
+]
+
+
+{N} Summary Sentences (S#):
+{summary}
+
+{M} Gap Cases (G#):
+{gap_cases}

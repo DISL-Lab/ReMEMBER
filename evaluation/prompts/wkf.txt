@@ -1,0 +1,30 @@
+For each salient utterance (U#), follow these steps:
+
+1. Identify the single most important claim in the utterance. Decompose it into two parts:
+   (a) the core referent — the specific entity, event, decision, or quantity at the center of the claim;
+   (b) the essential relation — the role this referent plays (who did what, when, why, or to whom) that makes the utterance salient.
+2. Decide whether a reader who sees only the summary could recover the claim with both (a) the correct referent and (b) the correct relation.
+   - Paraphrase is acceptable for the referent (synonyms, role-based references, alternate phrasings) as long as it uniquely identifies the same thing in (a).
+   - Narrative coverage of the same topic, project, or domain — without naming the specific referent or stating the specific relation — does NOT count. Score 0.0 in that case.
+   - A summary that mentions the referent but only in a different context (different action, different time, different participants) does NOT count for that relation.
+   - Do not use outside knowledge or commonsense inference. The claim must be directly recoverable from the summary text.
+
+Scores (binary):
+- 1.0: The summary states both (a) the specific referent and (b) the specific relation. A reader recovers the complete claim from the summary alone.
+- 0.0: Anything else — the referent is missing or only described by a generic role; the relation is generalized, vague, or missing; the summary only mentions the broader topic/narrative; the summary contradicts the claim; or the claim is only implied through commonsense. Partial coverage does NOT earn credit.
+
+Output JSON only. No explanation.
+[
+  {{
+    "utterance_num": "U0",
+    "score": 1.0,
+    "line_number": ["S1", "S3"]
+  }},
+  ...
+]
+
+{N} Summary Sentences (S#):
+{summary}
+
+{M} Salient Utterances (U#):
+{salient_utterances}

@@ -1,0 +1,26 @@
+You will receive a transcript followed by a corresponding summary. Your task is to assess the factuality of each summary sentence across nine categories:
+* no error: the statement is factually consistent with the transcript. This includes paraphrase, generalization, aggregation, and reasonable inference that is entailed by or follows naturally from the transcript, even if it is not stated verbatim. Do not penalize a sentence merely because the wording differs or because it synthesizes information across multiple turns.
+* out-of-context error: the statement asserts a specific fact that is neither stated in nor reasonably inferable from the transcript (genuine fabrication). Do NOT use this category for legitimate paraphrase, summary-level abstraction, or inference that the transcript supports.
+* entity error: the primary arguments (or their attributes) of the predicate are wrong.
+* predicate error: the predicate in the summary statement is inconsistent with the transcript.
+* circumstantial error: the additional information (like location or time) specifying the circumstance around a predicate is wrong.
+* grammatical error: the grammar of the sentence is so wrong that it becomes meaningless.
+* coreference error: a pronoun or reference with wrong or non-existing antecedent.
+* linking error: error in how multiple statements are linked together in the discourse (for example temporal ordering or causal link).
+* other error: the statement contains any factuality error which is not defined here.
+
+The transcript may be split into several labeled sections (for example prior context / memory and the current dialogue window, or retrieved passages). Treat all sections together as a single body of ground-truth evidence: a summary sentence is supported as long as ANY section supports it. Never flag a sentence merely because its supporting evidence sits in the prior-context/memory portion rather than the current window.
+
+Instruction:
+First, compare each summary sentence with the transcript. Judge whether the claim is contradicted by or unsupportable from the transcript — not whether it is restated word-for-word. Reasonable inference, paraphrase, and synthesis across turns are acceptable and should be labeled "no error". Only assign an error category when the sentence states something that conflicts with the transcript or asserts a specific fact the transcript does not support.
+Second, provide a single sentence explaining which factuality error the sentence has.
+Third, answer the classified error category for each sentence in the summary.
+
+Provide your answer in JSON format. The answer should be a list of dictionaries whose keys are "sentence", "reason", and "category". No additional information:
+[{"sentence": "first sentence", "reason": "your reason", "category": "no error"}, {"sentence": "second sentence", "reason": "your reason", "category": "out-of-context error"}, {"sentence": "third sentence", "reason": "your reason", "category": "entity error"},]
+
+Transcript:
+{transcript}
+
+Summary with {N} sentences:
+{summary}
