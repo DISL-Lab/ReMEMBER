@@ -65,13 +65,24 @@ Use the v1 index when you want to inspect annotation outcomes without
 redistributing corpus content. Use `remember_900.jsonl.gz` when you want to run
 or evaluate a system.
 
-## Redistribution
+## What is redistributed
 
-The text-bearing payload is redistributed under authorization covering
-EverMemBench, LoCoMo, and RealTalk. The project-authored annotations are
-provided under the repository's MIT License; that license does not itself grant
-rights to the upstream corpora. Review the upstream terms before redistributing
-this payload further.
+Be precise about this when reusing the payload: the annotations are derived
+work, but the dialogue is not. `history[]` and `turns[]` carry the upstream
+dialogue **verbatim** — 823,384 turns and roughly 192 million characters,
+byte-identical to the source corpora apart from being cut into windows. What
+this release adds on top is the annotation layer: gap and evidence coordinates,
+adjudication votes, salient utterances, and the sentences those coordinates
+resolve to.
+
+The payload is redistributed under authorization covering EverMemBench, LoCoMo,
+and RealTalk. The project-authored annotations are provided under the
+repository's MIT License; that license does not itself grant rights to the
+upstream corpora. If you redistribute this payload further, you are
+redistributing those corpora's text, so review their terms first.
+
+The v1 index in `annotations/` remains the option that carries no corpus text at
+all.
 
 ## Reading it
 

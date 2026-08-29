@@ -15,8 +15,11 @@ sentence which does not exist, and two that collided after `S0` evidence
 coordinates were normalized to `S1`. Gaps are identical in both. See
 [`README.md`](README.md) for how each coordinate was resolved to text.
 
-Text in the canonical payload is redistributed under authorization covering
-EverMemBench, LoCoMo, and RealTalk.
+The canonical payload carries upstream dialogue verbatim (823,384 turns,
+~192M characters, byte-identical to the source apart from windowing), not a
+paraphrased or otherwise derived form. It is redistributed under authorization
+covering EverMemBench, LoCoMo, and RealTalk; redistributing it further means
+redistributing those corpora's text.
 
 ## Summary (v1 compatibility index)
 
