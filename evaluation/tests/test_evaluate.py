@@ -30,7 +30,7 @@ EXPECTED_PROMPT_HASHES = {
 
 def _args(**overrides):
     namespace = argparse.Namespace(
-        benchmark=BENCHMARK, predictions=PREDICTIONS, output_dir=Path("/tmp/unused"),
+        benchmark=BENCHMARK, predictions=PREDICTIONS, output_dir=Path("unused-output"),
         provider="fake", model=ev.PAPER_MODEL, metrics="all", prompt_dir=PROMPT_DIR,
         temperature=0.0, mr_max_tokens=2048, coverage_max_tokens=4096, atomic_max_tokens=2048,
         factuality_max_tokens=2048, batch_size=64, gpu_devices=None, max_model_len=25000,
@@ -737,3 +737,23 @@ def test_finalization_failure_leaves_the_previous_result_intact(tmp_path, monkey
     assert {path.name: path.read_bytes() for path in output.iterdir()} == before
     assert not list(tmp_path.glob(".results.staged-*"))
     assert not list(tmp_path.glob(".results.backup-*"))
+
+
+def test_finalization_failure_keeps_the_resume_point(tmp_path, monkeypatch):
+    output = tmp_path / "results"
+    work = tmp_path / ".results.in_progress"
+    monkeypatch.setattr(ev, "_reload_and_validate", lambda *a, **k: (_ for _ in ()).throw(
+        RuntimeError("injected finalization failure")))
+    with pytest.raises(RuntimeError, match="injected finalization failure"):
+        ev.execute(_args(output_dir=output))
+    # Without the checkpoint directory a --resume would have to re-run every request.
+    assert work.is_dir()
+    assert (work / "raw_judgments.jsonl").is_file()
+    assert (work / "run_manifest.json").is_file()
+    assert not output.exists()
+
+
+def test_successful_run_removes_the_resume_point(tmp_path):
+    output = tmp_path / "results"
+    assert ev.execute(_args(output_dir=output)) == 0
+    assert not (tmp_path / ".results.in_progress").exists()

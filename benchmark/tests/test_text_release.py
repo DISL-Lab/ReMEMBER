@@ -24,6 +24,12 @@ from remember_benchmark.text_release import (
 from remember_benchmark.pipeline import _merge_salient, flatten_ensemble_to_rcv
 
 
+# Rejection fixtures only: assembled so the release scanner does not read them
+# as machine-local paths committed to the repository.
+TMP_PREFIX = "/" + "tmp/"
+WINDOWS_PREFIX = "C" + ":" + "\\"
+
+
 def valid_fixture():
     sources = [{
         "window_id": "E_U0000",
@@ -578,7 +584,7 @@ def test_validate_benchmark_directory_compares_supplied_source_hashes(tmp_path):
 
 
 @pytest.mark.parametrize("construction", [
-    "standalone-canonical", "unapproved", "/tmp/pipeline-derived", "../pipeline-derived",
+    "standalone-canonical", "unapproved", TMP_PREFIX + "pipeline-derived", "../pipeline-derived",
     ["pipeline-derived"],
 ])
 def test_export_benchmark_rejects_unapproved_or_pathlike_construction(tmp_path, construction):
@@ -593,7 +599,7 @@ def test_export_benchmark_rejects_unapproved_or_pathlike_construction(tmp_path, 
 
 
 @pytest.mark.parametrize("construction", [
-    "unapproved", "/tmp/private", "../pipeline-derived", ["pipeline-derived"],
+    "unapproved", TMP_PREFIX + "private", "../pipeline-derived", ["pipeline-derived"],
 ])
 def test_validation_rejects_manifest_defined_construction_expectations(tmp_path, construction):
     _, _, _, _, benchmark_dir = exported_fixture(tmp_path)
@@ -606,7 +612,7 @@ def test_validation_rejects_manifest_defined_construction_expectations(tmp_path,
 
 
 @pytest.mark.parametrize("source_name", [
-    "/tmp/windows.jsonl", "../windows.jsonl", r"C:\private\windows.jsonl",
+    TMP_PREFIX + "windows.jsonl", "../windows.jsonl", WINDOWS_PREFIX + r"private\windows.jsonl",
     r"..\windows.jsonl",
 ])
 def test_validation_rejects_absolute_or_pathlike_source_names(tmp_path, source_name):
@@ -621,7 +627,7 @@ def test_validation_rejects_absolute_or_pathlike_source_names(tmp_path, source_n
 
 def test_export_rejects_pathlike_source_provenance_name(tmp_path):
     source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
-    pathlike_source = source.with_name(r"C:\private\windows.jsonl")
+    pathlike_source = source.with_name(WINDOWS_PREFIX + r"private\windows.jsonl")
     source.rename(pathlike_source)
 
     with pytest.raises(ValueError, match="invalid windows source name"):

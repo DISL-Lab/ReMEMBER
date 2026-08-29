@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from .chunk_filter import WhitespaceCounter
 from .pipeline import MODEL_ORDER, build
 from .providers import OpenAICompatibleProvider, VLLMProvider
 
@@ -61,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--base-url")
     command.add_argument("--api-key-env", default="OPENAI_API_KEY")
     command.add_argument("--device")
+    command.add_argument("--token-counter", choices=("paper", "whitespace"), default="paper",
+                         help="paper uses tiktoken cl100k_base; whitespace is an approximate "
+                              "dependency-free counter for smoke runs only")
     command.add_argument("--resume", action="store_true")
     command.add_argument("--overwrite", action="store_true")
     command.add_argument("--from-stage")
@@ -80,7 +84,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                                                       api_key_env=args.api_key_env, temperature=temperature) for label in MODEL_ORDER}
     else:
         providers = {label: VLLMProvider(models[label], device=args.device, temperature=temperature) for label in MODEL_ORDER}
+    counter = None if args.token_counter == "paper" else WhitespaceCounter()
     result = build(config=config, work_dir=args.work_dir, output_dir=args.output_dir, provider=providers,
-                   resume=args.resume, overwrite=args.overwrite, from_stage=args.from_stage, to_stage=args.to_stage)
+                   counter=counter, resume=args.resume, overwrite=args.overwrite,
+                   from_stage=args.from_stage, to_stage=args.to_stage)
     print(json.dumps({"stage_names": result.stage_names}, sort_keys=True))
     return 0

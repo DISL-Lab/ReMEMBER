@@ -1,5 +1,9 @@
 # ReMEMber benchmark builder
 
+> The checked-in benchmark in [`../dataset/`](../dataset/README.md) is the
+> artifact to evaluate against; this package is the pipeline that produced it
+> and is not needed to run or score a system.
+
 `remember_benchmark` exposes one builder command with eight deterministic, resumable stages:
 
 ```text

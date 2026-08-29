@@ -220,3 +220,6 @@ __marimo__/
 # Project-local temporary artifacts
 *.tmp
 .worktrees/
+
+# Local planning workspace of the release tooling; never part of the release.
+.superpowers/

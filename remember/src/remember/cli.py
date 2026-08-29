@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 from .config import ConfigError, RememberConfig
 from .inference import (
     Cl100kTokenCounter,
+    WhitespaceTokenCounter,
     DeterministicFakeGenerator,
     DeterministicHashEmbedder,
     OpenAICompatibleGenerator,
@@ -196,16 +197,20 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--resume", action="store_true")
     run.add_argument("--overwrite", action="store_true")
     run.add_argument("--memory-only", action="store_true")
+    run.add_argument("--token-counter", choices=("paper", "whitespace"), default="paper",
+                     help="paper uses tiktoken cl100k_base; whitespace is an approximate "
+                          "dependency-free counter for smoke runs only")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     config = _load_config(args.config)
+    counter = (Cl100kTokenCounter() if args.token_counter == "paper"
+               else WhitespaceTokenCounter())
     if args.provider == "fake":
         generator = DeterministicFakeGenerator()
         embedder = DeterministicHashEmbedder()
-        counter = Cl100kTokenCounter()
     else:
         generator = (
             OpenAICompatibleGenerator(base_url=args.base_url, api_key_env=args.api_key_env)
@@ -217,7 +222,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             device=args.dense_device,
             gpu_devices=args.gpu_devices,
         )
-        counter = Cl100kTokenCounter()
     runtime_config = {
         "provider": args.provider,
         "base_url": args.base_url,

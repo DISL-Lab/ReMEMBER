@@ -76,7 +76,7 @@
 
 **Interfaces:**
 - Consumes: repository-relative paths scanned by `scan_release(root)`.
-- Produces: `_is_historical_document(relative: Path) -> bool`, used only to exempt historical repository names, fixed-GPU prose, and detached-runner prose in `docs/plans/`, `docs/superpowers/specs/`, and `docs/superpowers/plans/`; machine-local paths, credential literals, and secret-file fallbacks remain rejected everywhere.
+- Produces: `_is_historical_document(relative: Path) -> bool`, used only to exempt historical repository names, fixed-GPU prose, and detached-runner prose in `docs/plans/`, `docs/superpowers/specs/`, and `docs/superpowers/plans/`; machine-local paths, credential literals, and credential-path fallbacks remain rejected everywhere.
 
 - [ ] **Step 1: Add the failing historical-document scope test**
 
@@ -124,7 +124,7 @@ def _is_historical_document(relative: Path) -> bool:
     )
 ```
 
-Replace the local `is_plan` checks with `is_historical_document`. Apply the exemption only to research-tree names, fixed GPU examples, and detached runner names. Keep absolute paths, credential literals/assignments, and secret-file fallbacks outside the exemption.
+Replace the local `is_plan` checks with `is_historical_document`. Apply the exemption only to research-tree names, fixed GPU examples, and detached runner names. Keep absolute paths, credential literals/assignments, and credential-path fallbacks outside the exemption.
 
 - [ ] **Step 4: Run focused and existing layout tests**
 

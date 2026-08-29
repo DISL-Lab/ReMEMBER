@@ -1755,12 +1755,14 @@ def write_outputs_atomically(
         if backup is not None and Path(backup).exists() and not output_dir.exists():
             os.replace(backup, output_dir)
             backup = None
+        # The in-progress directory is the resume point: keep it on failure.
         raise
+    else:
+        if work_dir.exists():
+            shutil.rmtree(work_dir, ignore_errors=True)
     finally:
         if backup is not None and Path(backup).exists():
             shutil.rmtree(backup, ignore_errors=True)
-        if work_dir.exists():
-            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _reload_and_validate(directory: Path, per_window: Sequence[Mapping[str, Any]]) -> None:

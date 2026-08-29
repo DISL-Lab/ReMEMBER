@@ -14,6 +14,19 @@ class TokenCounter(Protocol):
     def count(self, text: str) -> int: ...
 
 
+class WhitespaceCounter:
+    """Dependency-free approximate counter for smoke runs.
+
+    It does NOT reproduce the paper's windowing; the stage manifests record the
+    counter adapter so such a run is never mistaken for the canonical build.
+    """
+
+    encoding_name = "whitespace"
+
+    def count(self, text: str) -> int:
+        return max(1, len((text or "").split()))
+
+
 class Cl100kCounter:
     encoding_name = "cl100k_base"
     def __init__(self) -> None:

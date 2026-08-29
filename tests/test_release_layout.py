@@ -1,9 +1,11 @@
+import gzip
 import importlib.util
 import hashlib
 import json
 import subprocess
 import sys
-import shutil
+
+import pytest
 from pathlib import Path
 
 
@@ -13,6 +15,88 @@ validator = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(validator)
 
+
+def _tiny_dataset(root: Path) -> Path:
+    """Build a minimal valid v1 index + v2 payload.
+
+    Mutation-only scans need a structurally valid dataset, not the real 74 MB
+    payload; copying that into every temporary tree dominated the suite runtime.
+    """
+    dataset = root / "dataset"
+    (dataset / "annotations").mkdir(parents=True)
+    (dataset / "splits").mkdir(parents=True)
+    (dataset / "splits/main_900.txt").write_text("E_U0000\nE_U0001\n", encoding="utf-8")
+
+    def annotation(window_id):
+        return {
+            "schema_version": "1.0", "window_id": window_id, "source": "evermembench",
+            "range": "8k~16k",
+            "gaps": [{"gap_idx": 0, "target_sentence_numbers": [0], "gap_type": "C",
+                      "evidence": [{"source_id": "T0-S1", "status": "resolve", "validation": 1,
+                                    "vote_count": 2, "votes": {"gemma": 1, "GLM": 1, "Qwen": 0}}]}],
+        }
+    (dataset / "annotations/remember_900_annotations.jsonl").write_text(
+        "".join(json.dumps(annotation(window_id)) + "\n"
+                for window_id in ("E_U0000", "E_U0001")), encoding="utf-8")
+
+    def turn(index, speaker, text):
+        return {"turn_index": index, "time": "2024-01-01 09:00:00", "speaker": speaker,
+                "dialogue": text}
+
+    def payload(window_id):
+        return {
+        "schema_version": "2.0", "window_id": window_id, "source": "evermembench",
+        "domain": "evermembench", "range": "8k~16k", "tok_start": 8000, "tok_end": 8001,
+        "history": [turn(0, "A", "The deadline is March 14.")],
+        "turns": [turn(0, "B", "She will finish before it.")],
+        "salient_utterances": [{"salient_idx": 0, "sentence_numbers": [0],
+                                "sentences": ["She will finish before it."],
+                                "gap_type": "C", "vote_count": 2}],
+        "gaps": [{"gap_idx": 0, "target_sentence_numbers": [0],
+                  "target_sentence": ["She will finish before it."], "gap_type": "C",
+                  "gap_reason": "Identify the deadline.",
+                  "evidence": [{"source_id": "T0-S1", "sentence": "The deadline is March 14.",
+                                "status": "resolve", "validation": 1, "vote_count": 2,
+                                "votes": {"gemma": 1, "GLM": 1, "Qwen": 0}}]}],
+        }
+    with gzip.GzipFile(filename="", mode="wb", mtime=0,
+                       fileobj=(dataset / "remember_900.jsonl.gz").open("wb")) as handle:
+        handle.write("".join(json.dumps(payload(window_id), ensure_ascii=False) + "\n"
+                             for window_id in ("E_U0000", "E_U0001")).encode("utf-8"))
+
+    sys.path.insert(0, str(ROOT / "benchmark/src"))
+    from remember_benchmark.release import _schema
+    (dataset / "schema.json").write_text(
+        json.dumps(_schema(), ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8")
+
+    def digest(relative: str) -> str:
+        return hashlib.sha256((dataset / relative).read_bytes()).hexdigest()
+
+    (dataset / "metadata.json").write_text(json.dumps({
+        "counts": {"windows": 2, "gaps": 2, "evidence": 2},
+        "artifacts": {
+            "annotations": {"path": "annotations/remember_900_annotations.jsonl",
+                            "sha256": digest("annotations/remember_900_annotations.jsonl")},
+            "schema": {"path": "schema.json", "sha256": digest("schema.json")},
+            "split": {"path": "splits/main_900.txt", "sha256": digest("splits/main_900.txt")},
+        },
+    }, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    return dataset
+
+
+def _payload_failures(root: Path) -> str:
+    return "\n".join(validator.scan_release(root)["leakage"]["failures"])
+
+
+def _read_payload(dataset: Path) -> list[dict]:
+    with gzip.open(dataset / "remember_900.jsonl.gz", "rt", encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+
+def _write_payload(dataset: Path, rows: list[dict]) -> None:
+    with gzip.open(dataset / "remember_900.jsonl.gz", "wt", encoding="utf-8") as handle:
+        handle.write("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
 
 def test_release_layout_dataset_and_source_scans_are_clean():
     summary = validator.scan_release(ROOT)
@@ -85,7 +169,7 @@ def test_documented_offline_smoke_uses_a_tracked_existing_input_path():
 
 
 def test_dataset_integrity_reports_metadata_count_tampering(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     metadata_path = tmp_path / "dataset/metadata.json"
     metadata = json.loads(metadata_path.read_text())
     metadata["counts"]["gaps"] = 999
@@ -95,7 +179,7 @@ def test_dataset_integrity_reports_metadata_count_tampering(tmp_path):
 
 
 def test_dataset_integrity_reports_split_order_tampering_without_crashing(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     split_path = tmp_path / "dataset/splits/main_900.txt"
     ids = split_path.read_text().splitlines()
     ids[:2] = reversed(ids[:2])
@@ -105,7 +189,7 @@ def test_dataset_integrity_reports_split_order_tampering_without_crashing(tmp_pa
 
 
 def test_dataset_integrity_rejects_scalar_abuse_even_with_updated_artifact_hash(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     annotation = tmp_path / "dataset/annotations/remember_900_annotations.jsonl"
     lines = annotation.read_text().splitlines()
     row = json.loads(lines[0])
@@ -122,7 +206,7 @@ def test_dataset_integrity_rejects_scalar_abuse_even_with_updated_artifact_hash(
 
 
 def test_validator_rejects_symlinks_machine_paths_yaml_secrets_and_unknown_dataset_payload(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     (tmp_path / "benchmark").mkdir()
     (tmp_path / "benchmark/escape").symlink_to(ROOT, target_is_directory=True)
     local_root = "/" + "mnt/private/model"
@@ -138,7 +222,7 @@ def test_validator_rejects_symlinks_machine_paths_yaml_secrets_and_unknown_datas
 
 
 def test_secret_scan_allows_environment_lookup_but_rejects_literal_assignments(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     (tmp_path / "benchmark").mkdir()
     safe_name = "api_" + "key"
     (tmp_path / "benchmark/safe.py").write_text(
@@ -154,7 +238,7 @@ def test_secret_scan_allows_environment_lookup_but_rejects_literal_assignments(t
 
 
 def test_source_scan_checks_toml_and_all_markdown_for_paths_and_secrets(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     (tmp_path / "benchmark").mkdir()
     secret_name = "api_" + "key"
     (tmp_path / "benchmark/pyproject.toml").write_text(f"{secret_name}='abcdefgh'\n")
@@ -166,7 +250,7 @@ def test_source_scan_checks_toml_and_all_markdown_for_paths_and_secrets(tmp_path
 
 
 def test_source_scan_cannot_be_bypassed_with_arbitrary_text_extensions(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     (tmp_path / "benchmark").mkdir()
     secret_name = "api_" + "key"
     machine_path = "/" + "mnt/private/x"
@@ -178,7 +262,7 @@ def test_source_scan_cannot_be_bypassed_with_arbitrary_text_extensions(tmp_path)
 
 
 def test_source_scan_rejects_generic_posix_machine_paths_but_allows_intentional_tmp_output(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     (tmp_path / "benchmark").mkdir()
     private_model = "/" + "var/lib/private/model"
     system_secret = "/" + "etc/secret"
@@ -200,7 +284,7 @@ def test_source_scan_rejects_generic_posix_machine_paths_but_allows_intentional_
 
 
 def test_plan_docs_still_scan_machine_paths_but_may_name_historical_research_tree(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     (tmp_path / "docs/plans").mkdir(parents=True)
     research_name = "1-" + "research"
     machine_path = "/" + "mnt/private/x"
@@ -220,7 +304,7 @@ def test_plan_docs_still_scan_machine_paths_but_may_name_historical_research_tre
 
 
 def test_superpowers_docs_may_name_historical_tree_but_still_scan_machine_paths(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     path = tmp_path / "docs/superpowers/specs/release.md"
     path.parent.mkdir(parents=True)
     historical = "1-" + "research"
@@ -242,7 +326,7 @@ def test_superpowers_docs_may_name_historical_tree_but_still_scan_machine_paths(
 
 
 def test_source_scan_ignores_only_root_git_worktree_metadata_file(tmp_path):
-    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    _tiny_dataset(tmp_path)
     (tmp_path / "benchmark").mkdir()
     gitdir_metadata = "gitdir: /" + "mnt/private/release/.git/worktrees/release\n"
     (tmp_path / ".git").write_text(gitdir_metadata)
@@ -255,3 +339,80 @@ def test_source_scan_ignores_only_root_git_worktree_metadata_file(tmp_path):
     (tmp_path / ".git").write_text("notes: /" + "mnt/private/release\n")
     failures = "\n".join(validator.scan_release(tmp_path)["leakage"]["failures"])
     assert "machine-local absolute path: .git" in failures
+
+
+def test_evaluation_is_an_allowed_product_directory():
+    assert "evaluation" in validator.ALLOWED_TOP
+    assert {"dataset", "benchmark", "remember", "evaluation"} <= validator.ALLOWED_TOP
+
+
+def test_evaluate_py_is_the_only_non_test_python_under_evaluation():
+    modules = [path.relative_to(ROOT) for path in (ROOT / "evaluation").rglob("*.py")
+               if "tests" not in path.relative_to(ROOT).parts
+               and "__pycache__" not in path.parts]
+    assert modules == [Path("evaluation/evaluate.py")]
+
+
+def test_only_the_canonical_payload_may_be_a_gzip(tmp_path):
+    _tiny_dataset(tmp_path)
+    assert validator.scan_release(tmp_path)["layout"]["failures"] == []
+
+    (tmp_path / "benchmark").mkdir()
+    with gzip.open(tmp_path / "benchmark/extra.jsonl.gz", "wb") as handle:
+        handle.write(b"{}\n")
+    failures = "\n".join(validator.scan_release(tmp_path)["layout"]["failures"])
+    assert "forbidden packaged file type: benchmark/extra.jsonl.gz" in failures
+
+
+def test_an_unlisted_extra_dataset_payload_is_rejected(tmp_path):
+    _tiny_dataset(tmp_path)
+    (tmp_path / "dataset/extra.jsonl").write_text("{}\n", encoding="utf-8")
+    assert "unknown dataset payload: extra.jsonl" in _payload_failures(tmp_path)
+
+
+def test_v1_annotations_still_reject_text_bearing_keys(tmp_path):
+    _tiny_dataset(tmp_path)
+    path = tmp_path / "dataset/annotations/remember_900_annotations.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    rows[0]["gaps"][0]["target_sentence"] = "private wording"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    assert "forbidden dataset key target_sentence" in _payload_failures(tmp_path)
+
+
+def test_the_payload_may_carry_text_but_not_structural_leak_keys(tmp_path):
+    dataset = _tiny_dataset(tmp_path)
+    assert "forbidden payload key" not in _payload_failures(tmp_path)
+
+    rows = _read_payload(dataset)
+    rows[0]["gaps"][0]["evidence"][0]["reasoning"] = "chain of thought"
+    _write_payload(dataset, rows)
+    assert "forbidden payload key reasoning" in _payload_failures(tmp_path)
+
+
+@pytest.mark.parametrize("mutation,message", [
+    (lambda row: row.update(window_id="E_U9999"), "window order"),
+    (lambda row: row.update(schema_version="1.0"), "unsupported schema version"),
+    (lambda row: row.update(history=[]), "carries no dialogue text"),
+])
+def test_payload_integrity_failures_are_precise(tmp_path, mutation, message):
+    dataset = _tiny_dataset(tmp_path)
+    rows = _read_payload(dataset)
+    mutation(rows[0])
+    _write_payload(dataset, rows)
+    assert message in _payload_failures(tmp_path)
+
+
+def test_a_corrupt_or_missing_payload_is_reported(tmp_path):
+    dataset = _tiny_dataset(tmp_path)
+    (dataset / "remember_900.jsonl.gz").write_bytes(b"not gzip at all")
+    assert "unreadable benchmark payload" in _payload_failures(tmp_path)
+    (dataset / "remember_900.jsonl.gz").unlink()
+    assert "missing benchmark payload" in _payload_failures(tmp_path)
+
+
+def test_the_checked_in_payload_has_the_released_population():
+    summary = validator.scan_release(ROOT)
+    assert summary["dataset"]["payload"]["counts"] == {
+        "windows": 900, "gaps": 1498, "evidence": 4132, "salient_utterances": 7245}
+    assert summary["dataset"]["index"]["counts"] == {
+        "windows": 900, "gaps": 1498, "evidence": 4135}

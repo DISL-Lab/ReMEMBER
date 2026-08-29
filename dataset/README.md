@@ -1,34 +1,86 @@
-# ReMEMber annotation-only dataset
+# ReMEMber dataset
 
-This directory publishes the 900-window ReMEMber annotation release without
-any dialogue, target-sentence, evidence-sentence, rationale, or other free
-text. It is intended to make annotation outcomes inspectable without
-redistributing source-corpus content.
+This directory publishes two views of the same 900-window release.
 
-`annotations/remember_900_annotations.jsonl` is the canonical payload. Each
-line is one ordered window and has a stable `window_id`, source label,
-context-length `range`, and its annotated gaps. A gap stores its source-row
-`gap_idx`, target sentence coordinates (`target_sentence_numbers`), and
-`gap_type`. Each retained evidence link stores only its source coordinate,
-adjudication status, vote count, three model votes, and `validation=1`.
+## `remember_900.jsonl.gz` — the self-contained benchmark (canonical)
 
-`splits/main_900.txt` is the ordered 900-window split. `window_id` is the join
-key between split and annotation lines; `source_id` is a coordinate within the
-upstream corpus and is not a public-content lookup service. `schema.json`
-defines the allowlisted record structure. `metadata.json` records the exact
-denominators and SHA-256 hashes of the distributed annotation, schema, and split files.
+One gzipped JSONL file, one JSON object per line, in the exact order of
+`splits/main_900.txt`. Every record carries everything an evaluation needs, so
+no research tree, no upstream corpus download, and no sentence splitter is
+required to use it:
 
-The paper denominator is exactly 900 windows, 1,498 non-empty target gaps,
-and 4,135 evidence links with `validation=1`. These are release counts, not
-counts for the larger candidate pool or for unvalidated evidence proposals.
+| field | meaning |
+|---|---|
+| `window_id`, `source`, `domain`, `range` | window identity, corpus, and context-length bucket |
+| `tok_start`, `tok_end` | the window's token span in its dialogue |
+| `history[]` | every prior turn, with `turn_index`, `time`, `speaker`, `dialogue` |
+| `turns[]` | the current window's turns, same shape |
+| `salient_utterances[]` | flattened WKF units: `sentence_numbers`, resolved `sentences`, `gap_type`, `vote_count` |
+| `gaps[]` | `gap_idx`, `target_sentence_numbers`, resolved `target_sentence`, `gap_type`, `gap_reason`, and `evidence[]` |
+| `gaps[].evidence[]` | `source_id`, the resolved `sentence`, `status`, `validation`, `vote_count`, per-model `votes` |
 
-Users are responsible for independently obtaining, reviewing, and complying
-with the upstream corpus terms before joining these coordinates to any source
-material. This release deliberately cannot reconstruct those texts. It also
-does not convey target wording, evidence wording, annotator rationale, or
-unvalidated links, so it is unsuitable for text-generation training or for
-reproducing text-level judgments by itself.
+Released population: **900 windows, 1,498 gaps, 4,132 validated evidence links,
+7,245 flattened salient utterances.**
 
-The project-authored annotation release is provided under the repository's MIT
-License. This does not grant rights to the upstream corpora; users must obtain
-and use those datasets under their respective terms.
+### Coordinates and how the text was resolved
+
+`target_sentence_numbers` are zero-based indices into the flattened current
+window. `source_id` is `T{turn}-S{sentence}` with zero-based history turns and
+one-based sentences.
+
+The annotations were produced over two different segmentations, and this
+release resolves each coordinate with the segmentation it was annotated under:
+
+- current-window targets and salient utterances: NLTK punkt over the raw turn text;
+- history evidence: emoji removal, then NLTK punkt, per turn.
+
+Because the resolved text is baked into every record, consumers never have to
+reproduce either splitter.
+
+Two normalizations were applied and are worth knowing about:
+
+1. **`S0` evidence coordinates.** A subset of annotation outputs emitted
+   zero-based sentence indices. Twenty such coordinates were remapped to `S1`;
+   in every case the remapped coordinate resolves to exactly the sentence the
+   annotation recorded.
+2. **Three dropped evidence links.** One coordinate addresses a sentence that
+   does not exist, and two collided with an already-present coordinate after the
+   `S0` remap. They are the entire difference between this file's 4,132 evidence
+   links and the v1 index's 4,135. Gaps are identical in both views (1,498).
+
+The `sentence` strings recorded alongside coordinates in the upstream research
+artifacts are model echoes — sometimes paraphrased, emoji-stripped, or truncated
+to `...`. They were **not** used as released text; every released sentence comes
+from resolving the coordinate against the dialogue.
+
+## `annotations/remember_900_annotations.jsonl` — the v1 text-free index
+
+The original coordinate-only release, kept byte-for-byte unchanged for
+compatibility. It carries no dialogue, target, evidence, or rationale text: only
+`window_id`, `range`, `source`, and per-gap coordinates, adjudication status,
+vote counts, and votes. `schema.json` and `metadata.json` describe and hash it.
+Its denominators remain 900 / 1,498 / 4,135.
+
+Use the v1 index when you want to inspect annotation outcomes without
+redistributing corpus content. Use `remember_900.jsonl.gz` when you want to run
+or evaluate a system.
+
+## Redistribution
+
+The text-bearing payload is redistributed under authorization covering
+EverMemBench, LoCoMo, and RealTalk. The project-authored annotations are
+provided under the repository's MIT License; that license does not itself grant
+rights to the upstream corpora. Review the upstream terms before redistributing
+this payload further.
+
+## Reading it
+
+```python
+import gzip, json
+
+with gzip.open("dataset/remember_900.jsonl.gz", "rt", encoding="utf-8") as handle:
+    rows = [json.loads(line) for line in handle if line.strip()]
+
+assert len(rows) == 900
+print(rows[0]["window_id"], len(rows[0]["history"]), len(rows[0]["gaps"]))
+```

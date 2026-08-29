@@ -27,18 +27,47 @@ This is the official github repository for "Don't Scroll Back: Missing-Evidence 
 
 ---
 
-- [`dataset/`](dataset/README.md): the 900-window annotation dataset.
-- [`benchmark/`](benchmark/README.md): the dataset-generation pipeline.
+- [`dataset/`](dataset/README.md): the 900-window benchmark. `remember_900.jsonl.gz`
+  is self-contained — dialogue, gold gaps, resolved evidence, and salient
+  utterances all live in the record, so nothing else has to be downloaded.
+- [`evaluation/`](evaluation/README.md): `evaluate.py`, the whole evaluator in one file.
 - [`remember/`](remember/README.md): the end-to-end ReMEMber method.
+- [`benchmark/`](benchmark/README.md): the pipeline that produced the dataset.
 
 ## Install
 
 ```bash
-python -m pip install ./benchmark
-python -m pip install ./remember
+python -m pip install ./remember                       # the method
+python -m pip install -r evaluation/requirements.txt   # the evaluator
+python -m nltk.downloader punkt_tab
 ```
+
+## Evaluate a system
+
+Predictions are one JSON object per line with `window_id`, `summary`, and
+`memory_text` (ReMEMber's own `memory.text` output is accepted directly):
+
+```bash
+python evaluation/evaluate.py \
+  --benchmark dataset/remember_900.jsonl.gz \
+  --predictions runs/my_system.jsonl \
+  --output-dir runs/my_system_scores \
+  --provider vllm --gpu-devices 0,1
+```
+
+This reports MR, MKF, WKF, factuality, conciseness, and diagnostic MR-gated MKF.
+See [`evaluation/README.md`](evaluation/README.md) for the OpenAI-compatible
+endpoint, resume, and output contract.
 
 ## Usage
 
 - ReMEMber method: [`remember/README.md`](remember/README.md)
+- Evaluation: [`evaluation/README.md`](evaluation/README.md)
+- Dataset: [`dataset/README.md`](dataset/README.md)
 - Dataset generation: [`benchmark/README.md`](benchmark/README.md)
+
+## Release check
+
+```bash
+python scripts/validate_release.py
+```

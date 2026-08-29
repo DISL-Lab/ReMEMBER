@@ -15,7 +15,7 @@
 - Do not distribute upstream dialogue text or derived free-text excerpts. Forbidden release fields include `history`, `turns`, `target_sentence`, `salient_turn`, evidence `sentence`, `gap_reason`, validator `reasoning`, speaker names, timestamps, media paths, URLs, prompts containing dialogue, and raw model responses.
 - Do not distribute model summaries, generated memories, factuality atoms, evaluator outputs, MTurk artifacts, logs, notebooks, caches, or model weights.
 - Dataset output order must match `main_900.txt`; every evidence entry must have `validation == 1`.
-- Release code must not contain machine-local absolute paths, fixed GPU IDs, credential literals, external key-file fallbacks, `nohup`, or runtime imports from `0-dataset/`, `1-research/`, or `2-rebuttal/`.
+- Release code must not contain machine-local absolute paths, fixed GPU IDs, credential literals, external credential-path fallbacks, `nohup`, or runtime imports from `0-dataset/`, `1-research/`, or `2-rebuttal/`.
 - The ReMEMber configuration uses at most 8 gaps, 128-token chunks, 32-token overlap, BM25 plus Qwen3-Embedding-0.6B dense retrieval, reciprocal-rank fusion constant 60, round-robin facet-turn packing, a 1,024-token memory budget, and `cl100k_base` token accounting.
 - Default gap and summary model: `Qwen/Qwen3.5-4B`; default dense model: `Qwen/Qwen3-Embedding-0.6B`.
 - RCV/gold annotations are never required or read by `remember run`; a window-ID filter may only restrict the inference population.
@@ -500,7 +500,7 @@ Document that `build` is one CLI with modular resumable stages; list user-suppli
 
 - [ ] **Step 6: Write failing whole-release layout and leakage tests**
 
-The tests recursively reject files outside `dataset`, `benchmark`, `remember`, `docs`, `scripts`, `tests`, and root `README.md`; reject forbidden extensions/directories; scan release source/config files for local absolute paths, credential assignments, key-file fallbacks, and research-tree runtime imports; recursively scan only the published dataset JSON/JSONL payloads for forbidden content fields; compile Python files; and invoke both fake-provider CLIs.
+The tests recursively reject files outside `dataset`, `benchmark`, `remember`, `docs`, `scripts`, `tests`, and root `README.md`; reject forbidden extensions/directories; scan release source/config files for local absolute paths, credential assignments, credential-path fallbacks, and research-tree runtime imports; recursively scan only the published dataset JSON/JSONL payloads for forbidden content fields; compile Python files; and invoke both fake-provider CLIs.
 
 - [ ] **Step 7: Run whole-release tests and verify RED**
 

@@ -212,6 +212,17 @@ class SentenceTransformerEmbedder:
         )
 
 
+class WhitespaceTokenCounter:
+    """Dependency-free approximate counter for smoke runs.
+
+    It does NOT reproduce the paper's token accounting; runs that use it are
+    labelled by `counter_adapter` in the output manifest.
+    """
+
+    def count(self, text: str) -> int:
+        return max(1, len((text or "").split()))
+
+
 class Cl100kTokenCounter:
     """Lazy exact token accounting retained from the paper implementation."""
 

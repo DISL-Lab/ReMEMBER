@@ -1,6 +1,24 @@
-# Dataset card: ReMEMber annotation-only release
+# Dataset card: ReMEMber 900-window release
 
-## Summary
+## Two views of one release
+
+- **`remember_900.jsonl.gz` (canonical).** Self-contained: every record carries
+  its own dialogue history, current window, gold gaps, resolved evidence
+  sentences, and salient utterances. Population: 900 windows, 1,498 gaps, 4,132
+  validated evidence links, 7,245 flattened salient utterances. This is what the
+  evaluator reads.
+- **`annotations/remember_900_annotations.jsonl` (v1 compatibility index).** The
+  original coordinate-only view, byte-for-byte unchanged, described below.
+
+The two differ by exactly three evidence links: one coordinate that addresses a
+sentence which does not exist, and two that collided after `S0` evidence
+coordinates were normalized to `S1`. Gaps are identical in both. See
+[`README.md`](README.md) for how each coordinate was resolved to text.
+
+Text in the canonical payload is redistributed under authorization covering
+EverMemBench, LoCoMo, and RealTalk.
+
+## Summary (v1 compatibility index)
 
 This is a coordinate-and-label release for the ReMEMber 900-window evaluation
 set. It exposes structural annotation outcomes while removing all free text

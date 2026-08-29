@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import os
@@ -17,10 +18,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_TOP = {
-    "dataset", "benchmark", "remember", "docs", "scripts", "tests",
+    "dataset", "benchmark", "remember", "evaluation", "docs", "scripts", "tests",
     "README.md", "LICENSE", ".gitignore",
 }
-IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache"}
+# `.superpowers` is the local planning workspace of the tool that produced this
+# release; it is untracked scratch state, not release content.
+IGNORED_DIRS = {".git", "__pycache__", ".pytest_cache", ".superpowers"}
 FORBIDDEN_DIRS = {".venv", "venv", "build", "dist", "checkpoints"}
 FORBIDDEN_SUFFIXES = {".ipynb", ".log", ".zip", ".tar", ".gz", ".7z", ".rar", ".pyc",
                       ".pt", ".pth", ".bin", ".safetensors", ".ckpt", ".onnx"}
@@ -29,10 +32,25 @@ FORBIDDEN_DATA_KEYS = {
     "reasoning", "raw_output", "speaker", "speakers", "time", "timestamp", "media",
     "media_url", "url", "urls",
 }
+# The one text-bearing payload. It is the only `.gz` the release may carry.
+CANONICAL_PAYLOAD = Path("remember_900.jsonl.gz")
 ALLOWED_DATASET_FILES = frozenset({
     Path("README.md"), Path("DATASET_CARD.md"), Path("schema.json"), Path("metadata.json"),
     Path("annotations/remember_900_annotations.jsonl"), Path("splits/main_900.txt"),
+    CANONICAL_PAYLOAD,
 })
+# Text keys are legitimate in the v2 payload; these structural keys never are.
+FORBIDDEN_PAYLOAD_KEYS = {
+    "media", "media_url", "url", "urls", "raw_output", "reasoning", "reasons",
+}
+EXPECTED_PAYLOAD_COUNTS = {
+    "windows": 900, "gaps": 1498, "evidence": 4132, "salient_utterances": 7245,
+}
+
+
+def _is_canonical_payload(relative: Path) -> bool:
+    """True only for the exact released payload path, relative to the release root."""
+    return relative == Path("dataset") / CANONICAL_PAYLOAD
 
 
 def _sha256(path: Path) -> str:
@@ -84,7 +102,8 @@ def _layout_scan(root: Path) -> list[str]:
         parts = Path(relative).parts
         if any(part in IGNORED_DIRS or part in FORBIDDEN_DIRS or part.endswith(".egg-info") for part in parts):
             failures.append(f"tracked forbidden directory/cache: {relative}")
-        if Path(relative).suffix.lower() in FORBIDDEN_SUFFIXES:
+        if (Path(relative).suffix.lower() in FORBIDDEN_SUFFIXES
+                and not _is_canonical_payload(Path(relative))):
             failures.append(f"tracked forbidden file type: {relative}")
     for path in _walk(root):
         relative = path.relative_to(root)
@@ -93,7 +112,7 @@ def _layout_scan(root: Path) -> list[str]:
             continue
         if any(part in FORBIDDEN_DIRS or part.endswith(".egg-info") for part in relative.parts):
             failures.append(f"forbidden packaged directory: {relative}")
-        if path.suffix.lower() in FORBIDDEN_SUFFIXES:
+        if path.suffix.lower() in FORBIDDEN_SUFFIXES and not _is_canonical_payload(relative):
             failures.append(f"forbidden packaged file type: {relative}")
         lowered = path.name.lower()
         if lowered in {"credentials", "credentials.json", "service-account.json", ".env"} or lowered.endswith(".key"):
@@ -126,6 +145,53 @@ def _payload_scan(root: Path) -> list[str]:
             for key in _keys(value):
                 if key in FORBIDDEN_DATA_KEYS:
                     failures.append(f"forbidden dataset key {key}: {path.relative_to(root)}")
+    failures.extend(_payload_integrity(dataset / CANONICAL_PAYLOAD, root))
+    return failures
+
+
+def _payload_integrity(path: Path, root: Path) -> list[str]:
+    """Parse the compressed payload and check structure, order, and counts."""
+    if not path.is_file():
+        return [f"missing benchmark payload: {path.relative_to(root)}"]
+    relative = path.relative_to(root)
+    split_path = root / "dataset/splits/main_900.txt"
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            rows = [json.loads(line) for line in handle if line.strip()]
+    except (OSError, gzip.BadGzipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [f"unreadable benchmark payload: {relative}: {exc}"]
+
+    failures: list[str] = []
+    for row in rows:
+        for key in _keys(row):
+            if key in FORBIDDEN_PAYLOAD_KEYS:
+                failures.append(f"forbidden payload key {key}: {relative}")
+                break
+        if failures:
+            break
+    try:
+        split_ids = [line.strip() for line in split_path.read_text(encoding="utf-8").splitlines()
+                     if line.strip()]
+    except OSError as exc:
+        return failures + [f"unreadable split: {exc}"]
+    if [row.get("window_id") for row in rows] != split_ids:
+        failures.append(f"payload window order does not match the ordered split: {relative}")
+    counts = {
+        "windows": len(rows),
+        "gaps": sum(len(row.get("gaps") or []) for row in rows),
+        "evidence": sum(len(gap.get("evidence") or [])
+                        for row in rows for gap in row.get("gaps") or []),
+        "salient_utterances": sum(len(row.get("salient_utterances") or []) for row in rows),
+    }
+    if len(split_ids) == EXPECTED_PAYLOAD_COUNTS["windows"] and counts != EXPECTED_PAYLOAD_COUNTS:
+        failures.append(f"payload counts {counts} != {EXPECTED_PAYLOAD_COUNTS}: {relative}")
+    for index, row in enumerate(rows):
+        if row.get("schema_version") != "2.0":
+            failures.append(f"payload row {index} has an unsupported schema version: {relative}")
+            break
+        if not (row.get("history") and row.get("turns")):
+            failures.append(f"payload row {index} carries no dialogue text: {relative}")
+            break
     return failures
 
 
@@ -141,7 +207,11 @@ def _is_historical_document(relative: Path) -> bool:
 def _source_scan(root: Path) -> list[str]:
     failures: list[str] = []
     research_names = ("0-" + "dataset", "1-" + "research", "2-" + "rebuttal")
-    credential_prefixes = ("s" + "k-", "h" + "f_")
+    # Match real key material, not any word containing the prefix: "task-by-task"
+    # is not an OpenAI key.
+    credential_literal = re.compile(
+        r"\b(?:" + "s" + "k-" + r"[A-Za-z0-9_-]{4,}|" + "h" + "f_" + r"[A-Za-z0-9]{4,})"
+    )
     fixed_gpu = re.compile(r"CUDA_VISIBLE_DEVICES\s*=\s*[\"']?\d")
     absolute = re.compile(
         r"(?:(?<=^)|(?<=[\s\"'=]))/(?!proc/self/fd(?:/|$)|dev/null(?:$|\s))[A-Za-z0-9._-]+/"
@@ -162,7 +232,8 @@ def _source_scan(root: Path) -> list[str]:
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            failures.append(f"non-UTF8 source asset: {relative}")
+            if not _is_canonical_payload(relative):
+                failures.append(f"non-UTF8 source asset: {relative}")
             continue
         if relative == Path(".git") and re.fullmatch(
                 r"gitdir: (?:/[^\r\n]+|[A-Za-z]:[\\/][^\r\n]+)\r?\n?", text):
@@ -184,8 +255,7 @@ def _source_scan(root: Path) -> list[str]:
         unsafe_yaml_secret = any(
             not safe_env_name.fullmatch(match.group(1)) for match in yaml_secret.finditer(text)
         )
-        if (any(prefix in text for prefix in credential_prefixes)
-                or unsafe_python_secret or unsafe_yaml_secret):
+        if (credential_literal.search(text) or unsafe_python_secret or unsafe_yaml_secret):
             failures.append(f"credential literal/assignment: {relative}")
         if not is_historical_document and any(name in text for name in research_names):
             failures.append(f"research-tree runtime reference: {relative}")
@@ -222,8 +292,29 @@ def _dataset_summary(root: Path) -> dict[str, Any]:
             raise ValueError(f"dataset metadata hash mismatch: {name}")
     if metadata_value.get("counts") != counts:
         raise ValueError("dataset metadata counts do not match recomputed counts")
-    return {"counts": counts, "hashes": {"annotations": _sha256(annotation), "schema": _sha256(schema),
-            "metadata": _sha256(metadata), "split": _sha256(split)}}
+    index_hashes = {"annotations": _sha256(annotation), "schema": _sha256(schema),
+                    "metadata": _sha256(metadata), "split": _sha256(split)}
+    payload = root / "dataset" / CANONICAL_PAYLOAD
+    payload_counts: dict[str, int] = {}
+    if payload.is_file():
+        with gzip.open(payload, "rt", encoding="utf-8") as handle:
+            payload_rows = [json.loads(line) for line in handle if line.strip()]
+        payload_counts = {
+            "windows": len(payload_rows),
+            "gaps": sum(len(row.get("gaps") or []) for row in payload_rows),
+            "evidence": sum(len(gap.get("evidence") or [])
+                            for row in payload_rows for gap in row.get("gaps") or []),
+            "salient_utterances": sum(len(row.get("salient_utterances") or [])
+                                      for row in payload_rows),
+        }
+    return {
+        # `counts`/`hashes` stay at the top level for the v1 compatibility contract.
+        "counts": counts, "hashes": index_hashes,
+        "index": {"counts": counts, "hashes": index_hashes},
+        "payload": {"counts": payload_counts,
+                    "sha256": _sha256(payload) if payload.is_file() else None,
+                    "path": str(CANONICAL_PAYLOAD)},
+    }
 
 
 def scan_release(root: Path = ROOT) -> dict[str, Any]:
@@ -251,7 +342,8 @@ def _run(command: list[str], *, env: dict[str, str] | None = None) -> dict[str, 
 
 def _compile() -> dict[str, Any]:
     failures = []
-    for base in (ROOT / "benchmark/src", ROOT / "remember/src", ROOT / "scripts"):
+    for base in (ROOT / "benchmark/src", ROOT / "remember/src", ROOT / "scripts",
+                 ROOT / "evaluation"):
         for path in base.rglob("*.py"):
             try:
                 py_compile.compile(str(path), doraise=True, cfile=str(Path(tempfile.gettempdir()) / (path.name + ".pyc")))
@@ -262,21 +354,25 @@ def _compile() -> dict[str, Any]:
 
 def _benchmark_smoke(temp: Path) -> dict[str, Any]:
     source = temp / "normalized.jsonl"; split = temp / "split.txt"; config = temp / "benchmark.yaml"
+    # The v2 schema excludes the "other" range, so the smoke window must land in a
+    # real range; with the whitespace counter that needs a turn of 8001 words.
+    long_sentence = "Fixture " + "filler " * 7999 + "sentence."
     source.write_text(json.dumps({"schema_version": "1.0", "dialogue_id": "E_topic-1_group-1",
-        "source": "evermembench", "turns": [{"time": "2024-01-01", "speaker": "A", "dialogue": "Fixture sentence."}]}) + "\n")
+        "source": "evermembench", "turns": [{"time": "2024-01-01", "speaker": "A", "dialogue": long_sentence}]}) + "\n")
     split.write_text("E_U0000\n")
     prompts = ROOT / "benchmark/prompts"
     config.write_text(json.dumps({"sources": {"normalized": str(source)},
         "models": {"gemma": "fixture/gemma", "GLM": "fixture/glm", "Qwen": "fixture/qwen"},
         "thresholds": {"salient": 3, "chunk_filter": 3, "validation": 2},
-        "windowing": {"start_tokens": 0, "size_tokens": 1, "strides": {"evermembench": 999}},
-        "chunking": {"tokens": 128, "overlap_tokens": 32, "chunks_per_group": 16},
+        "windowing": {"start_tokens": 8000, "size_tokens": 1, "strides": {"evermembench": 99999}},
+        "chunking": {"tokens": 128000, "overlap_tokens": 32, "chunks_per_group": 16},
         "temperature": 0, "prompts": {"salient": str(prompts / "salient.txt"),
         "chunk_filter": str(prompts / "relevant_chunk_filtering.txt"), "evidence": str(prompts / "relevant_chunk.txt"),
         "validation": str(prompts / "relevant_chunk_validation.txt")}, "split": str(split),
         "expected_counts": {"windows": 1, "gaps": 1, "evidence": 0}}))
     return _run([sys.executable, "-m", "remember_benchmark", "build", "--config", str(config),
-        "--work-dir", str(temp / "benchmark-work"), "--output-dir", str(temp / "benchmark-out"), "--provider", "fake"],
+        "--work-dir", str(temp / "benchmark-work"), "--output-dir", str(temp / "benchmark-out"),
+        "--provider", "fake", "--token-counter", "whitespace"],
         env={"PYTHONPATH": str(ROOT / "benchmark/src")})
 
 
@@ -285,8 +381,79 @@ def _remember_smoke(temp: Path) -> dict[str, Any]:
     source.write_text(json.dumps({"window_id": "fixture-window", "history": [{"time": "09:00", "speaker": "A",
         "dialogue": "Earlier fixture detail."}], "turns": [{"time": "10:00", "speaker": "B", "dialogue": "Use it now."}]}) + "\n")
     return _run([sys.executable, "-m", "remember", "run", "--config", str(ROOT / "remember/configs/paper.yaml"),
-        "--input", str(source), "--output", str(output), "--provider", "fake"],
+        "--input", str(source), "--output", str(output), "--provider", "fake",
+        "--token-counter", "whitespace"],
         env={"PYTHONPATH": str(ROOT / "remember/src")})
+
+
+def _evaluation_smoke(temp: Path) -> dict[str, Any]:
+    """CPU-only fake evaluation: no NLTK download, no GPU, no credential."""
+    work = temp / "evaluation-smoke"
+    work.mkdir(parents=True, exist_ok=True)
+    # Any import of a judge backend during a fake run is a defect, so make it fatal.
+    for module in ("vllm", "openai"):
+        (work / f"{module}.py").write_text(
+            f"raise AssertionError('{module} must not be imported by a fake run')\n",
+            encoding="utf-8")
+
+    def turn(index: int, speaker: str, text: str) -> dict[str, Any]:
+        return {"turn_index": index, "time": "2024-01-01 09:00:00", "speaker": speaker,
+                "dialogue": text}
+
+    row = {
+        "schema_version": "2.0", "window_id": "E_U0000", "source": "evermembench",
+        "domain": "evermembench", "range": "8k~16k", "tok_start": 8000, "tok_end": 8001,
+        "history": [turn(0, "A", "The deadline is March 14.")],
+        "turns": [turn(0, "B", "She will finish before it.")],
+        "salient_utterances": [{"salient_idx": 0, "sentence_numbers": [0],
+                                "sentences": ["She will finish before it."],
+                                "gap_type": "C", "vote_count": 3}],
+        "gaps": [{"gap_idx": 0, "target_sentence_numbers": [0],
+                  "target_sentence": ["She will finish before it."], "gap_type": "C",
+                  "gap_reason": "Identify the deadline.",
+                  "evidence": [{"source_id": "T0-S1", "sentence": "The deadline is March 14.",
+                                "status": "resolve", "validation": 1, "vote_count": 3,
+                                "votes": {"gemma": 1, "GLM": 1, "Qwen": 1}}]}],
+    }
+    benchmark = work / "benchmark.jsonl"
+    benchmark.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    predictions = work / "predictions.jsonl"
+    # Punctuation-free single sentences keep the smoke off the NLTK tokenizer.
+    predictions.write_text(json.dumps({
+        "window_id": "E_U0000", "summary": "The deadline is March 14",
+        "memory_text": "The deadline is March 14",
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    output = work / "results"
+    environment = {"PYTHONPATH": str(work)}
+    result = _run([sys.executable, str(ROOT / "evaluation/evaluate.py"),
+                   "--benchmark", str(benchmark), "--predictions", str(predictions),
+                   "--output-dir", str(output), "--provider", "fake", "--allow-partial"],
+                  env=environment)
+    failures: list[str] = []
+    if result["ok"]:
+        expected = {"scores.json", "scores.csv", "per_window.jsonl", "raw_judgments.jsonl",
+                    "run_manifest.json"}
+        produced = {item.name for item in output.iterdir()} if output.is_dir() else set()
+        if produced != expected:
+            failures.append(f"evaluator produced {sorted(produced)}, expected {sorted(expected)}")
+        else:
+            manifest = json.loads((output / "run_manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("status") != "complete":
+                failures.append("evaluator run manifest is not complete")
+            if manifest.get("provenance", {}).get("scientific_provider") is not False:
+                failures.append("fake provider must never be marked scientific")
+            scores = json.loads((output / "scores.json").read_text(encoding="utf-8"))
+            missing = [name for name in
+                       ("mr", "mkf", "wkf", "factuality", "conciseness", "mr_gated_mkf")
+                       if name not in scores]
+            if missing:
+                failures.append(f"evaluator omitted metrics: {missing}")
+    if "CUDA_VISIBLE_DEVICES" in os.environ:
+        failures.append("validation process gained CUDA_VISIBLE_DEVICES")
+    result["failures"] = failures
+    result["ok"] = bool(result["ok"]) and not failures
+    return result
 
 
 def main() -> int:
@@ -297,14 +464,18 @@ def main() -> int:
                           env={"PYTHONPATH": str(ROOT / "benchmark/src")}),
         "remember": _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "remember/tests"],
                          env={"PYTHONPATH": str(ROOT / "remember/src")}),
+        "evaluation": _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                            "evaluation/tests"], env={"PYTHONPATH": str(ROOT)}),
     }
     with tempfile.TemporaryDirectory(prefix="remember-release-validation-") as directory:
         temp = Path(directory)
-        smokes = {"benchmark": _benchmark_smoke(temp), "remember": _remember_smoke(temp)}
+        smokes = {"benchmark": _benchmark_smoke(temp), "remember": _remember_smoke(temp),
+                  "evaluation": _evaluation_smoke(temp)}
     summary["compile"] = compile_result
     summary["tests"] = {"ok": all(item["ok"] for item in tests.values()), "commands": tests}
     summary["smokes"] = {"ok": all(item["ok"] for item in smokes.values()), "commands": smokes}
-    exact = summary["dataset"].get("counts") == {"windows": 900, "gaps": 1498, "evidence": 4135}
+    exact = (summary["dataset"].get("counts") == {"windows": 900, "gaps": 1498, "evidence": 4135}
+             and summary["dataset"].get("payload", {}).get("counts") == EXPECTED_PAYLOAD_COUNTS)
     summary["ok"] = (not summary["layout"]["failures"] and not summary["leakage"]["failures"] and exact
                      and compile_result["ok"] and summary["tests"]["ok"] and summary["smokes"]["ok"])
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
