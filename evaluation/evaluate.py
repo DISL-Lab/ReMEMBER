@@ -800,12 +800,19 @@ def mr_gap_id(gap: Mapping[str, Any]) -> str:
     return f"gap_{gap['gap_idx']}"
 
 
+def _joined_target(gap: Mapping[str, Any]) -> str:
+    """The annotation's target sentence as one string, as the judge prompts expect."""
+    return " ".join(gap["target_sentence"])
+
+
 def render_mr_gaps(gaps: Sequence[Mapping[str, Any]]) -> str:
+    """Exactly the GAP item the canonical memory-recall evaluator builds."""
     payload = [
         {
             "gap_id": mr_gap_id(gap),
-            "target_sentence": gap["target_sentence"],
-            "gap_type": gap.get("gap_type"),
+            "salient_utterance": _joined_target(gap),
+            "gap_type": gap.get("gap_type", ""),
+            "gap_reason": gap.get("gap_reason", ""),
             "supporting_sentences": [
                 {"source_id": item["source_id"], "text": item["sentence"]}
                 for item in gap.get("evidence", [])
@@ -822,18 +829,26 @@ def render_summary_lines(sentences: Sequence[str], *, start: int) -> str:
 
 
 def render_gap_cases(gaps: Sequence[Mapping[str, Any]]) -> str:
+    """Exactly the G# block the canonical coverage evaluator builds.
+
+    `utterance_num` is the gap's position in the released gap list, which is what
+    the canonical builder emits when every row carries validated evidence.
+    """
     blocks = []
     for index, gap in enumerate(gaps):
-        evidence = "\n".join(item["sentence"] for item in gap.get("evidence", []))
+        chunk = "\n".join(item["sentence"] for item in gap.get("evidence", []))
         blocks.append(
             f"G{index}:\n"
-            f"salient_utterance: {' '.join(gap['target_sentence'])}\n"
-            f"relevant_chunk:\n{evidence}"
+            f"- utterance_num: U{index}\n"
+            f"- salient_utterance: {_joined_target(gap)}\n"
+            f"- gap_type: {gap.get('gap_type', '')}\n"
+            f"- relevant_chunk: {chunk}"
         )
     return "\n\n".join(blocks)
 
 
 def render_salient_utterances(items: Sequence[Mapping[str, Any]]) -> str:
+    """One line per flattened salient sentence, as the canonical evaluator does."""
     return "\n".join(
         f"U{index}: {' '.join(item['sentences'])}" for index, item in enumerate(items)
     )
@@ -932,7 +947,8 @@ class FakeProvider:
 
     def _mkf(self, prompt: str) -> str:
         lines = _summary_lines(prompt)
-        cases = re.findall(r"^G(\d+):\n\s*salient_utterance: (.*)$", prompt, flags=re.MULTILINE)
+        cases = re.findall(r"^G(\d+):\n- utterance_num: U\d+\n- salient_utterance: (.*)$",
+                           prompt, flags=re.MULTILINE)
         results = []
         for number, claim in cases:
             score, hits = self._score(claim.strip(), lines)

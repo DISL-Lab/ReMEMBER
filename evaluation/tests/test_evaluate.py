@@ -899,3 +899,52 @@ def test_resume_rejects_unusable_interrupted_state(tmp_path, damage, message):
             (work / "run_manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ev.ResumeError, match=message):
         ev.execute(_args(output_dir=output, resume=True))
+
+
+def test_mr_gap_item_matches_the_canonical_shape():
+    """Keys and values as the canonical memory-recall evaluator builds them."""
+    row = ev.load_benchmark(BENCHMARK).rows[0]
+    [first, second] = json.loads(ev.render_mr_gaps(row["gaps"]))
+    assert list(first) == ["gap_id", "salient_utterance", "gap_type", "gap_reason",
+                           "supporting_sentences", "supporting_reasoning"]
+    assert first["gap_id"] == "gap_0" and second["gap_id"] == "gap_3"
+    assert first["salient_utterance"] == "She will finish it before the deadline."
+    assert first["gap_reason"] == first["supporting_reasoning"] == row["gaps"][0]["gap_reason"]
+    assert first["supporting_sentences"] == [
+        {"source_id": "T0-S1", "text": "The migration deadline is March 14."},
+        {"source_id": "T1-S1", "text": "Ada owns the billing service."},
+    ]
+
+
+def test_mkf_gap_case_block_matches_the_canonical_shape():
+    """Layout as the canonical coverage evaluator builds it."""
+    row = ev.load_benchmark(BENCHMARK).rows[0]
+    blocks = ev.render_gap_cases(row["gaps"]).split("\n\n")
+    assert blocks[0] == (
+        "G0:\n"
+        "- utterance_num: U0\n"
+        "- salient_utterance: She will finish it before the deadline.\n"
+        "- gap_type: C\n"
+        "- relevant_chunk: The migration deadline is March 14.\n"
+        "Ada owns the billing service."
+    )
+    # G# is positional, and gap_3 becomes G1/U1 - never gap_idx 3.
+    assert blocks[1].startswith("G1:\n- utterance_num: U1\n")
+
+
+def test_wkf_lines_match_the_canonical_shape():
+    row = ev.load_benchmark(BENCHMARK).rows[0]
+    assert ev.render_salient_utterances(row["salient_utterances"]) == (
+        "U0: She will finish it before the deadline.\n"
+        "U1: That matches the plan we agreed."
+    )
+
+
+def test_factuality_transcript_and_fact_numbering_match_the_canonical_shape():
+    """Memory-then-window transcript, and the checker's one-based fact numbering."""
+    row = ev.load_benchmark(BENCHMARK).rows[1]
+    assert ev.render_factuality_transcript("MEM", row["turns"]) == (
+        "[MEMORY]\nMEM\n\n[CURRENT WINDOW]\n"
+        "[2024-01-01 09:00:00] Dee: Latte knocked the plant over again."
+    )
+    assert ev.render_numbered_facts([{"text": "A."}, {"text": "B."}]) == "1. A.\n2. B."
