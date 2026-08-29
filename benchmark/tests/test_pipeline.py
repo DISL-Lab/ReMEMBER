@@ -5,12 +5,15 @@ from pathlib import Path
 import pytest
 import remember_benchmark.pipeline as pipeline
 
+from remember_benchmark.io import iter_jsonl_gzip
 from remember_benchmark.pipeline import STAGES, build, flatten_ensemble_to_rcv
 
 
 class WordCounter:
+    """Fixed per-turn cost that places the single fixture window in 8k~16k."""
+
     def count(self, text):
-        return 1
+        return 4000
 
 
 class FixtureProvider:
@@ -54,9 +57,9 @@ def _fixture(tmp_path):
         "sources": {"normalized": str(source)},
         "models": {"gemma": "fixture/gemma", "GLM": "fixture/glm", "Qwen": "fixture/qwen"},
         "thresholds": {"salient": 3, "chunk_filter": 3, "validation": 2},
-        "windowing": {"start_tokens": 2, "size_tokens": 1,
-                      "strides": {"evermembench": 99}},
-        "chunking": {"tokens": 32, "overlap_tokens": 0, "chunks_per_group": 16},
+        "windowing": {"start_tokens": 8000, "size_tokens": 1,
+                      "strides": {"evermembench": 99999}},
+        "chunking": {"tokens": 128000, "overlap_tokens": 0, "chunks_per_group": 16},
         "prompts": {name: str(prompt_dir / filename) for name, filename in {
             "salient": "salient.txt", "chunk_filter": "relevant_chunk_filtering.txt",
             "evidence": "relevant_chunk.txt", "validation": "relevant_chunk_validation.txt"}.items()},
@@ -66,7 +69,7 @@ def _fixture(tmp_path):
     return config, source, split
 
 
-def test_full_build_runs_eight_stages_and_exports_text_free_payload(tmp_path):
+def test_full_build_runs_eight_stages_and_exports_v1_index_and_pipeline_v2_mirror(tmp_path):
     config, _, _ = _fixture(tmp_path)
     providers = {name: FixtureProvider() for name in config["models"]}
     result = build(config, tmp_path / "work", tmp_path / "out", providers, counter=WordCounter())
@@ -86,6 +89,39 @@ def test_full_build_runs_eight_stages_and_exports_text_free_payload(tmp_path):
     assert not (forbidden & set(keys(row)))
     assert not (tmp_path / "out/private_rcv.jsonl").exists()
     assert (tmp_path / "work/release/private_rcv.jsonl").exists()
+
+    benchmark = tmp_path / "out/benchmark"
+    manifest = json.loads((benchmark / "manifest.json").read_text())
+    assert manifest["counts"] == {
+        "windows": 1,
+        "gaps": 1,
+        "evidence": 2,
+        "salient_utterances": 1,
+        "by_source": {"evermembench": 1},
+        "by_range": {"8k~16k": 1},
+    }
+    assert manifest["provenance"]["construction"] == "pipeline-derived"
+    assert [item["rows"] for item in manifest["shards"]] == [1] + [0] * 9
+    assert [item["path"] for item in manifest["shards"]] == [
+        f"remember_900-{index:05d}-of-00010.jsonl.gz" for index in range(10)
+    ]
+    rows = [
+        item
+        for shard in manifest["shards"]
+        for item in iter_jsonl_gzip(benchmark / shard["path"])
+    ]
+    assert len(rows) == 1
+    [benchmark_row] = rows
+    assert benchmark_row["source"] == "evermembench"
+    assert benchmark_row["domain"] == "evermembench"
+    assert benchmark_row["gaps"][0]["target_sentence"] == "Use the prior fact."
+    assert [item["sentence"] for item in benchmark_row["gaps"][0]["evidence"]] == [
+        "Earlier fact.", "More context.",
+    ]
+    assert benchmark_row["gaps"][0]["gap_reason"] == (
+        "Resolve the target utterance using the validated evidence."
+    )
+    assert benchmark_row["salient_utterances"][0]["sentences"] == ["Use the prior fact."]
 
 
 def test_flat_bridge_densifies_two_of_three_vote_map_and_uses_real_target():
@@ -200,6 +236,98 @@ def test_resume_rejects_missing_or_corrupt_release_artifacts(tmp_path, relative,
         path.write_text("{}\n")
     with pytest.raises(ValueError, match="release|output hash|stage output|artifact|metadata|schema"):
         build(config, work, out, providers, counter=WordCounter(), resume=True)
+
+
+SHARD_NAMES = [f"remember_900-{index:05d}-of-00010.jsonl.gz" for index in range(10)]
+
+
+def test_release_inventory_binds_builder_owned_sources_and_benchmark_counts(tmp_path):
+    _, _, _, _, work, out = _complete_build(tmp_path)
+    inventory = json.loads((work / "release/release.manifest.json").read_text())
+    # The mirror is bound to this run's own work-tree artifacts, never to a
+    # historical research path.
+    assert [item["name"] for item in inventory["inputs"]] == [
+        "windows.jsonl", "ensemble.jsonl", "annotations.jsonl", "private_rcv.jsonl", "split.txt",
+    ]
+    assert list(inventory["artifacts"]) == sorted([
+        "annotations/remember_900_annotations.jsonl", "schema.json", "metadata.json",
+        "splits/main_900.txt", "benchmark/schema.json", "benchmark/manifest.json",
+        *(f"benchmark/{name}" for name in SHARD_NAMES),
+    ])
+    manifest = json.loads((out / "benchmark/manifest.json").read_text())
+    assert inventory["benchmark_counts"] == manifest["counts"]
+    for name, digest in inventory["artifacts"].items():
+        assert digest == pipeline.sha256_file(out / name)
+
+
+@pytest.mark.parametrize("damage,match", [
+    ("missing_populated_shard", "release artifact is missing"),
+    ("missing_empty_shard", "release artifact is missing"),
+    ("missing_manifest", "release artifact is missing"),
+    ("missing_schema", "release artifact is missing"),
+    ("corrupt_shard_bytes", "release artifact hash mismatch"),
+    ("altered_manifest", "release artifact hash mismatch"),
+    ("altered_schema", "release artifact hash mismatch"),
+    ("unexpected_private_payload", "allowlist violation"),
+    ("inventory_count_drift", "release benchmark count mismatch"),
+])
+def test_resume_rejects_every_damaged_benchmark_mirror_signal(tmp_path, damage, match):
+    config, _, _, providers, work, out = _complete_build(tmp_path)
+    benchmark = out / "benchmark"
+    if damage == "missing_populated_shard":
+        (benchmark / SHARD_NAMES[0]).unlink()
+    elif damage == "missing_empty_shard":
+        (benchmark / SHARD_NAMES[-1]).unlink()
+    elif damage == "missing_manifest":
+        (benchmark / "manifest.json").unlink()
+    elif damage == "missing_schema":
+        (benchmark / "schema.json").unlink()
+    elif damage == "corrupt_shard_bytes":
+        (benchmark / SHARD_NAMES[0]).write_bytes(b"not-gzip-bytes")
+    elif damage == "altered_manifest":
+        manifest = json.loads((benchmark / "manifest.json").read_text())
+        manifest["counts"]["windows"] = 2
+        (benchmark / "manifest.json").write_text(json.dumps(manifest) + "\n")
+    elif damage == "altered_schema":
+        (benchmark / "schema.json").write_text("{}\n")
+    elif damage == "unexpected_private_payload":
+        (benchmark / "private.jsonl").write_text("{\"secret\": 1}\n")
+    else:
+        inventory_path = work / "release/release.manifest.json"
+        inventory = json.loads(inventory_path.read_text())
+        inventory["benchmark_counts"] = dict(inventory["benchmark_counts"], windows=2)
+        inventory_path.write_text(json.dumps(inventory) + "\n")
+    with pytest.raises(ValueError, match=match):
+        build(config, work, out, providers, counter=WordCounter(), resume=True)
+
+
+def test_resume_rejects_a_tampered_private_rcv_bridge(tmp_path):
+    config, _, _, providers, work, out = _complete_build(tmp_path)
+    private = work / "release/private_rcv.jsonl"
+    private.write_text(private.read_text() + private.read_text())
+    with pytest.raises(ValueError, match="release input hash mismatch"):
+        build(config, work, out, providers, counter=WordCounter(), resume=True)
+
+
+def test_resume_rejects_a_missing_private_rcv_bridge(tmp_path):
+    config, _, _, providers, work, out = _complete_build(tmp_path)
+    (work / "release/private_rcv.jsonl").unlink()
+    with pytest.raises(ValueError, match="release input is missing"):
+        build(config, work, out, providers, counter=WordCounter(), resume=True)
+
+
+def test_resume_revalidates_the_published_benchmark_directory(tmp_path, monkeypatch):
+    config, _, _, providers, work, out = _complete_build(tmp_path)
+    seen = []
+
+    def rejecting(directory, ordered_window_ids, **kwargs):
+        seen.append((Path(directory), list(ordered_window_ids), kwargs))
+        raise ValueError("injected directory rejection")
+
+    monkeypatch.setattr(pipeline, "validate_benchmark_directory", rejecting)
+    with pytest.raises(ValueError, match="released benchmark directory is invalid"):
+        build(config, work, out, providers, counter=WordCounter(), resume=True)
+    assert seen == [(out / "benchmark", ["E_U0000"], {"expected_counts": (1, 1, 2)})]
 
 
 def test_valid_partial_overwrite_verifies_prerequisites_and_recomputes_downstream(tmp_path):
@@ -380,6 +508,35 @@ def test_failed_release_generation_leaves_previous_output_and_inventory_unchange
               counter=WordCounter(), overwrite=True, from_stage="release")
     assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == old
     assert (work / "release/release.manifest.json").read_bytes() == inventory
+
+
+def test_failed_benchmark_export_restores_the_previous_v1_and_v2_release_together(tmp_path, monkeypatch):
+    config, _, _, _, work, out = _complete_build(tmp_path)
+    old = {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()}
+    inventory = (work / "release/release.manifest.json").read_bytes()
+    # The v1 index is staged before the v2 mirror, so a mirror failure must not
+    # leave a published tree holding only the freshly written v1 artifacts.
+    monkeypatch.setattr(pipeline, "export_benchmark",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected mirror failure")))
+    with pytest.raises(RuntimeError, match="injected mirror failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]},
+              counter=WordCounter(), overwrite=True, from_stage="release")
+    assert {path.relative_to(out): path.read_bytes() for path in out.rglob("*") if path.is_file()} == old
+    assert (work / "release/release.manifest.json").read_bytes() == inventory
+    assert not list(tmp_path.glob(".out.release-*"))
+    assert not list(tmp_path.glob(".out.backup-*"))
+
+
+def test_fresh_benchmark_export_failure_leaves_no_public_tree_or_inventory(tmp_path, monkeypatch):
+    config, _, _ = _fixture(tmp_path)
+    work, out = tmp_path / "work", tmp_path / "out"
+    monkeypatch.setattr(pipeline, "export_benchmark",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fresh mirror failure")))
+    with pytest.raises(RuntimeError, match="fresh mirror failure"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]}, counter=WordCounter())
+    assert not out.exists()
+    assert not (work / "release/release.manifest.json").exists()
+    assert not list(tmp_path.glob(".out.release-*"))
 
 
 def test_fresh_export_failure_leaves_no_public_tree_inventory_or_staging_sibling(tmp_path, monkeypatch):

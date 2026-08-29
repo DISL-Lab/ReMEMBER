@@ -22,6 +22,8 @@ from .release import export_annotations, sanitize_annotations, validate_annotati
 from .salient import expand_window_sentences, run_salient
 from .schemas import NormalizedDialogue, NormalizedTurn
 from .sources import normalize_sources
+from .text_release import (build_benchmark_records_from_pipeline, export_benchmark,
+                           validate_benchmark_directory)
 from .chunk_filter import Cl100kCounter, run_chunk_filter
 from .validation import run_validation
 from .windows import build_windows
@@ -97,11 +99,19 @@ def _validate_disjoint_paths(work_dir: Path, output_dir: Path) -> None:
         raise ValueError("work-dir and output-dir must be fully disjoint (no equality or ancestry)")
 
 
-PUBLIC_FILES = frozenset({
+BENCHMARK_SHARD_PATHS = tuple(
+    Path("benchmark") / f"remember_900-{index:05d}-of-00010.jsonl.gz"
+    for index in range(10)
+)
+BENCHMARK_SHARDS = frozenset(BENCHMARK_SHARD_PATHS)
+V1_RELEASE_ARTIFACTS = (
     Path("annotations/remember_900_annotations.jsonl"), Path("schema.json"),
     Path("metadata.json"), Path("splits/main_900.txt"),
-})
-PUBLIC_DIRS = frozenset({Path("annotations"), Path("splits")})
+)
+BENCHMARK_METADATA = (Path("benchmark/schema.json"), Path("benchmark/manifest.json"))
+RELEASE_ARTIFACTS = V1_RELEASE_ARTIFACTS + BENCHMARK_METADATA + BENCHMARK_SHARD_PATHS
+PUBLIC_FILES = frozenset(RELEASE_ARTIFACTS)
+PUBLIC_DIRS = frozenset({Path("annotations"), Path("splits"), Path("benchmark")})
 
 
 def _validate_public_tree(path: Path, *, allow_absent: bool = True) -> None:
@@ -247,8 +257,7 @@ def _stage_targets(work_dir: Path, output_dir: Path, stage_index: int) -> list[P
     elif stage_index == 6: outputs = [work_dir / "ensemble/annotations.jsonl"]
     else:
         outputs = [work_dir / "release/private_rcv.jsonl", _release_inventory_path(work_dir),
-                   output_dir / "annotations/remember_900_annotations.jsonl", output_dir / "schema.json",
-                   output_dir / "metadata.json", output_dir / "splits/main_900.txt"]
+                   *(output_dir / relative for relative in RELEASE_ARTIFACTS)]
     targets: list[Path] = []
     for path in outputs:
         targets.append(path)
@@ -385,26 +394,42 @@ def _release_inventory_path(work_dir: Path) -> Path:
     return work_dir / "release" / "release.manifest.json"
 
 
+def _benchmark_manifest_counts(output_dir: Path) -> Any:
+    manifest = json.loads((output_dir / "benchmark/manifest.json").read_text(encoding="utf-8"))
+    return manifest.get("counts")
+
+
 def _write_release_inventory(work_dir: Path, output_dir: Path, split_path: Path,
                              inputs: Sequence[Path], config: Mapping[str, Any]) -> None:
-    names = ("annotations/remember_900_annotations.jsonl", "schema.json", "metadata.json", "splits/main_900.txt")
     payload = {
         "schema_version": "1.0", "stage": "release",
         "configuration_sha256": configuration_hash(config),
         "inputs": [{"name": path.name, "sha256": sha256_file(path)} for path in inputs],
-        "artifacts": {name: sha256_file(output_dir / name) for name in names},
+        "artifacts": {relative.as_posix(): sha256_file(output_dir / relative)
+                      for relative in RELEASE_ARTIFACTS},
+        "benchmark_counts": _benchmark_manifest_counts(output_dir),
         "source_split_sha256": sha256_file(split_path),
     }
     _atomic_text(_release_inventory_path(work_dir), canonical_json(payload) + "\n")
 
 
-def _build_staged_release(staged: Path, private_path: Path, split_path: Path,
+def _build_staged_release(staged: Path, windows_path: Path, private_path: Path,
+                          salient_path: Path, split_path: Path,
                           split_ids: Sequence[str], expected: tuple[int, int, int]) -> None:
     staged_split = staged / "splits/main_900.txt"
     _atomic_text(staged_split, split_path.read_text(encoding="utf-8"))
     annotation = staged / "annotations/remember_900_annotations.jsonl"
     export_annotations(private_path, staged_split, annotation, staged / "metadata.json", staged / "schema.json")
     validate_annotations(_rows(annotation), split_ids, expected)
+    benchmark_rows = build_benchmark_records_from_pipeline(
+        iter_jsonl(windows_path), iter_jsonl(private_path), iter_jsonl(salient_path), split_ids,
+    )
+    expected_salient = sum(len(row["salient_utterances"]) for row in benchmark_rows)
+    export_benchmark(
+        windows_path, private_path, salient_path, staged_split, staged / "benchmark",
+        expected_counts=expected, expected_salient_count=expected_salient,
+        construction="pipeline-derived",
+    )
     _validate_public_tree(staged, allow_absent=False)
     metadata = json.loads((staged / "metadata.json").read_text(encoding="utf-8"))
     for name, relative in (("annotations", "annotations/remember_900_annotations.jsonl"),
@@ -423,9 +448,12 @@ def _verify_release(work_dir: Path, output_dir: Path, split_path: Path, expected
     leftovers = sorted(inventory_path.parent.glob(f".{inventory_path.name}.*.tmp"))
     if leftovers:
         raise ResumeMismatch(f"incomplete temporary release inventory exists: {leftovers[0]}")
-    for path in (annotation, schema, metadata, copied_split, inventory_path):
+    for path in (*(output_dir / relative for relative in RELEASE_ARTIFACTS), inventory_path):
         if not path.is_file():
             raise ResumeMismatch(f"release artifact is missing: {path}")
+    for path in inputs:
+        if not Path(path).is_file():
+            raise ResumeMismatch(f"release input is missing: {path}")
     try:
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         meta = json.loads(metadata.read_text(encoding="utf-8"))
@@ -438,9 +466,18 @@ def _verify_release(work_dir: Path, output_dir: Path, split_path: Path, expected
     if inventory.get("inputs") != current_inputs:
         raise ResumeMismatch("release input hash mismatch")
     artifacts = inventory.get("artifacts", {})
-    for name in ("annotations/remember_900_annotations.jsonl", "schema.json", "metadata.json", "splits/main_900.txt"):
-        if artifacts.get(name) != sha256_file(output_dir / name):
+    for relative in RELEASE_ARTIFACTS:
+        name = relative.as_posix()
+        if artifacts.get(name) != sha256_file(output_dir / relative):
             raise ResumeMismatch(f"release artifact hash mismatch: {name}")
+    split_ids = [line.strip() for line in split_path.read_text(encoding="utf-8").splitlines()]
+    try:
+        counts = validate_benchmark_directory(output_dir / "benchmark", split_ids,
+                                              expected_counts=expected)
+    except ValueError as exc:
+        raise ResumeMismatch(f"released benchmark directory is invalid: {exc}") from exc
+    if inventory.get("benchmark_counts") != counts:
+        raise ResumeMismatch("release benchmark count mismatch")
     if meta.get("counts") != dict(zip(("windows", "gaps", "evidence"), expected)):
         raise ResumeMismatch("release expected-count mismatch")
     if meta.get("artifacts", {}).get("annotations", {}).get("sha256") != sha256_file(annotation):
@@ -589,18 +626,22 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
         raise ValueError(f"ordered split file is missing: {split_path}")
     counts_map = config.get("expected_counts", {})
     expected = tuple(int(counts_map[key]) for key in ("windows", "gaps", "evidence"))
-    annotation = output_dir / "annotations/remember_900_annotations.jsonl"
+    private_path = work_dir / "release" / "private_rcv.jsonl"
     release_config = {"pipeline": PIPELINE_VERSION, "expected_counts": list(expected), "models": model_ids,
-                      "thresholds": _jsonable(threshold), "split_sha256": sha256_file(split_path)}
+                      "thresholds": _jsonable(threshold), "split_sha256": sha256_file(split_path),
+                      "windows_sha256": sha256_file(windows_path),
+                      "salient_sha256": sha256_file(merged_salient_path)}
+    # Both published artifacts are bound to this run's own work-tree sources; no
+    # historical research path is ever consulted at runtime.
+    release_inputs = [windows_path, merged_salient_path, ensemble_path, private_path, split_path]
     if mode == "resume":
-        _verify_release(work_dir, output_dir, split_path, expected, inputs=[ensemble_path, split_path], config=release_config)
+        _verify_release(work_dir, output_dir, split_path, expected, inputs=release_inputs, config=release_config)
     else:
-        release_targets = [annotation, output_dir / "schema.json", output_dir / "metadata.json",
-                           output_dir / "splits/main_900.txt", _release_inventory_path(work_dir)]
+        release_targets = [*(output_dir / relative for relative in RELEASE_ARTIFACTS),
+                           _release_inventory_path(work_dir)]
         if mode == "write" and any(path.exists() for path in release_targets):
             raise FileExistsError("release output exists; use --resume or --overwrite")
         private_rcv = flatten_ensemble_to_rcv(ensemble_rows, merged_salient)
-        private_path = work_dir / "release" / "private_rcv.jsonl"
         atomic_write_jsonl(private_path, private_rcv)
         split_ids = [line.strip() for line in split_path.read_text(encoding="utf-8").splitlines()]
         # Count/schema validation is a preflight: a mismatch must not publish a
@@ -609,11 +650,14 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         staged = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.release-", dir=output_dir.parent))
         try:
-            _build_staged_release(staged, private_path, split_path, split_ids, expected)
+            _build_staged_release(
+                staged, windows_path, private_path, merged_salient_path, split_path,
+                split_ids, expected,
+            )
             _commit_release_transaction(
                 staged, output_dir, overwrite=mode == "overwrite",
                 write_inventory=lambda: _write_release_inventory(
-                    work_dir, output_dir, split_path, [ensemble_path, split_path], release_config),
+                    work_dir, output_dir, split_path, release_inputs, release_config),
                 inventory_path=_release_inventory_path(work_dir),
             )
         finally:
