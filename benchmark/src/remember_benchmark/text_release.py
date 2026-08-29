@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
+import os
 import re
-from collections.abc import Iterable, Sequence
+import shutil
+import tempfile
+import uuid
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from .evidence import _history_index
+from .io import atomic_write_jsonl_gzip, fsync_parent_directory, iter_jsonl, iter_jsonl_gzip
 from .release import RANGE_VALUES, SOURCE_BY_PREFIX
 from .salient import expand_window_sentences
 
@@ -20,6 +29,26 @@ SOURCE_VALUES = ("evermembench", "locomo", "realtalk")
 BENCHMARK_RANGE_VALUES = tuple(value for value in RANGE_VALUES if value != "other")
 VOTE_KEYS = frozenset({"gemma", "GLM", "Qwen"})
 WINDOW_ID_PATTERN = re.compile(r"[ELR]_U\d{4,}")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+SHARDING_POLICY = "balanced-contiguous-v1"
+DATASET_NAME = "remember_900"
+
+PROVENANCE = {
+    "construction": "canonical-source-join",
+    "window_normalization": "time-speaker-dialogue-v1",
+    "current_sentence_splitter": "terminal-punctuation-whitespace-v1",
+    "history_source_id_splitter": "T-zero-based-S-one-based-v1",
+    "target_join": "single-space-v1",
+    "record_builder": "remember-benchmark-text-release-v1",
+}
+COORDINATE_SYSTEM = {
+    "target_sentence_numbers": "zero-based flattened current-window sentences",
+    "source_id": "zero-based T history turn and one-based S sentence",
+}
+AUTHORIZATION = {
+    "redistributable_text": True,
+    "scope": ["EverMemBench", "LoCoMo", "RealTalk"],
+}
 
 WINDOW_KEYS = frozenset({
     "schema_version", "window_id", "source", "domain", "range", "tok_start", "tok_end",
@@ -549,3 +578,394 @@ def benchmark_schema() -> dict[str, Any]:
         "title": "ReMEMber text-bearing benchmark record",
         **_object_schema(properties),
     }
+
+
+def _read_split_ids(path: Path) -> list[str]:
+    with path.open("r", encoding="utf-8") as handle:
+        window_ids = [line.strip() for line in handle]
+    if any(not window_id for window_id in window_ids):
+        raise ValueError("split contains an empty window ID")
+    return window_ids
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+    ) as handle:
+        temporary_path = Path(handle.name)
+        try:
+            json.dump(value, handle, ensure_ascii=False, sort_keys=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+    os.replace(temporary_path, path)
+    fsync_parent_directory(path)
+
+
+def _balanced_sizes(row_count: int, shard_count: int) -> list[int]:
+    quotient, remainder = divmod(row_count, shard_count)
+    return [quotient + (index < remainder) for index in range(shard_count)]
+
+
+def _shard_name(index: int, shard_count: int) -> str:
+    return f"{DATASET_NAME}-{index:05d}-of-{shard_count:05d}.jsonl.gz"
+
+
+def export_benchmark(
+    source_path: Path,
+    rcv_path: Path,
+    salient_path: Path,
+    split_path: Path,
+    benchmark_dir: Path,
+    *,
+    expected_counts: tuple[int, int, int] | None = None,
+    expected_salient_count: int | None = None,
+    shard_count: int = BENCHMARK_SHARD_COUNT,
+    construction: str = "canonical-source-join",
+) -> dict[str, Any]:
+    """Build validated records and publish schema, shards, then manifest."""
+    if type(shard_count) is not int or shard_count <= 0:
+        raise ValueError("shard_count must be positive")
+    if not isinstance(construction, str) or not construction:
+        raise ValueError("construction must be a non-empty string")
+    benchmark_dir = Path(benchmark_dir)
+    if benchmark_dir.exists() and any(benchmark_dir.iterdir()):
+        raise ValueError(f"benchmark directory must be empty: {benchmark_dir}")
+
+    split_ids = _read_split_ids(Path(split_path))
+    rows = build_benchmark_records(
+        iter_jsonl(Path(source_path)),
+        iter_jsonl(Path(rcv_path)),
+        iter_jsonl(Path(salient_path)),
+        split_ids,
+    )
+    stats = validate_benchmark_records(
+        rows,
+        split_ids,
+        expected_counts=expected_counts,
+        expected_salient_count=expected_salient_count,
+    )
+
+    benchmark_dir.mkdir(parents=True, exist_ok=True)
+    schema_path = benchmark_dir / "schema.json"
+    _atomic_write_json(schema_path, benchmark_schema())
+
+    shards: list[dict[str, Any]] = []
+    offset = 0
+    for index, size in enumerate(_balanced_sizes(len(rows), shard_count)):
+        name = _shard_name(index, shard_count)
+        shard_path = benchmark_dir / name
+        atomic_write_jsonl_gzip(shard_path, rows[offset:offset + size])
+        offset += size
+        shards.append({"path": name, "rows": size, "sha256": _sha256(shard_path)})
+
+    provenance = dict(PROVENANCE)
+    provenance["construction"] = construction
+    manifest = {
+        "schema_version": BENCHMARK_SCHEMA_VERSION,
+        "dataset": DATASET_NAME,
+        "sharding": {"count": shard_count, "policy": SHARDING_POLICY},
+        "shards": shards,
+        "artifacts": {
+            "schema": {"path": "schema.json", "sha256": _sha256(schema_path)},
+            "split": {"path": "../splits/main_900.txt", "sha256": _sha256(Path(split_path))},
+        },
+        "sources": {
+            "windows": {"name": Path(source_path).name, "sha256": _sha256(Path(source_path))},
+            "rcv": {"name": Path(rcv_path).name, "sha256": _sha256(Path(rcv_path))},
+            "salient": {"name": Path(salient_path).name, "sha256": _sha256(Path(salient_path))},
+        },
+        "provenance": provenance,
+        "coordinate_system": dict(COORDINATE_SYSTEM),
+        "counts": stats,
+        "authorization": {**AUTHORIZATION, "scope": list(AUTHORIZATION["scope"])},
+    }
+    _atomic_write_json(benchmark_dir / "manifest.json", manifest)
+    return manifest
+
+
+def _require_exact_keys(value: Any, expected: set[str], location: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError(f"invalid {location} keys")
+    return value
+
+
+def _require_sha256(value: Any, location: str) -> str:
+    if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"invalid {location} hash; expected lowercase SHA-256")
+    return value
+
+
+def _validate_readme(path: Path) -> bytes:
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("README.md must be a regular non-symlink file")
+    payload = path.read_bytes()
+    try:
+        payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("README.md must be valid UTF-8") from error
+    return payload
+
+
+def _validated_manifest(benchmark_dir: Path) -> dict[str, Any]:
+    manifest_path = benchmark_dir / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("manifest.json must be a regular file")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid manifest.json") from error
+    manifest = _require_exact_keys(manifest, {
+        "schema_version", "dataset", "sharding", "shards", "artifacts", "sources",
+        "provenance", "coordinate_system", "counts", "authorization",
+    }, "manifest")
+    if manifest["schema_version"] != BENCHMARK_SCHEMA_VERSION:
+        raise ValueError("unsupported manifest schema version")
+    if manifest["dataset"] != DATASET_NAME:
+        raise ValueError("invalid manifest dataset")
+
+    sharding = _require_exact_keys(manifest["sharding"], {"count", "policy"}, "sharding")
+    shard_count = sharding["count"]
+    if type(shard_count) is not int or shard_count <= 0 or sharding["policy"] != SHARDING_POLICY:
+        raise ValueError("invalid manifest sharding")
+    if not isinstance(manifest["shards"], list) or len(manifest["shards"]) != shard_count:
+        raise ValueError("invalid manifest shard count")
+
+    counts = _require_exact_keys(manifest["counts"], {
+        "windows", "gaps", "evidence", "salient_utterances", "by_source", "by_range",
+    }, "counts")
+    for name in ("windows", "gaps", "evidence", "salient_utterances"):
+        if type(counts[name]) is not int or counts[name] < 0:
+            raise ValueError(f"invalid manifest {name} count")
+    expected_sizes = _balanced_sizes(counts["windows"], shard_count)
+    for index, item in enumerate(manifest["shards"]):
+        item = _require_exact_keys(item, {"path", "rows", "sha256"}, f"shard {index}")
+        if item["path"] != _shard_name(index, shard_count):
+            raise ValueError("invalid manifest shard order")
+        if type(item["rows"]) is not int or item["rows"] != expected_sizes[index]:
+            raise ValueError("manifest count mismatch: invalid balanced shard row counts")
+        _require_sha256(item["sha256"], f"shard {index}")
+
+    artifacts = _require_exact_keys(manifest["artifacts"], {"schema", "split"}, "artifacts")
+    for name, expected_path in (("schema", "schema.json"), ("split", "../splits/main_900.txt")):
+        artifact = _require_exact_keys(artifacts[name], {"path", "sha256"}, f"{name} artifact")
+        if artifact["path"] != expected_path:
+            raise ValueError(f"invalid {name} artifact path")
+        _require_sha256(artifact["sha256"], name)
+
+    sources = _require_exact_keys(manifest["sources"], {"windows", "rcv", "salient"}, "sources")
+    for name, raw_source in sources.items():
+        source = _require_exact_keys(raw_source, {"name", "sha256"}, f"{name} source")
+        if (
+            not isinstance(source["name"], str)
+            or not source["name"]
+            or Path(source["name"]).name != source["name"]
+        ):
+            raise ValueError(f"invalid {name} source name")
+        _require_sha256(source["sha256"], f"{name} source")
+
+    expected_provenance = dict(PROVENANCE)
+    construction = manifest["provenance"].get("construction") \
+        if isinstance(manifest["provenance"], dict) else None
+    if isinstance(construction, str) and construction:
+        expected_provenance["construction"] = construction
+    if manifest["provenance"] != expected_provenance:
+        raise ValueError("invalid manifest provenance")
+    if manifest["coordinate_system"] != COORDINATE_SYSTEM:
+        raise ValueError("invalid manifest coordinate system")
+    if manifest["authorization"] != AUTHORIZATION:
+        raise ValueError("invalid manifest authorization")
+    return manifest
+
+
+def validate_benchmark_directory(
+    benchmark_dir: Path,
+    ordered_window_ids: Sequence[str],
+    *,
+    expected_counts: tuple[int, int, int] | None = None,
+    expected_salient_count: int | None = None,
+    expected_source_hashes: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Validate the complete allowlisted release directory and its provenance."""
+    benchmark_dir = Path(benchmark_dir)
+    if benchmark_dir.is_symlink() or not benchmark_dir.is_dir():
+        raise ValueError("benchmark directory must be a regular directory")
+    manifest = _validated_manifest(benchmark_dir)
+
+    shard_names = [item["path"] for item in manifest["shards"]]
+    allowed_names = {"manifest.json", "schema.json", *shard_names}
+    if (benchmark_dir / "README.md").exists() or (benchmark_dir / "README.md").is_symlink():
+        _validate_readme(benchmark_dir / "README.md")
+        allowed_names.add("README.md")
+    actual_names = {entry.name for entry in benchmark_dir.iterdir()}
+    if actual_names != allowed_names or any(entry.is_symlink() or not entry.is_file()
+                                            for entry in benchmark_dir.iterdir()):
+        raise ValueError("benchmark directory contents do not match the canonical allowlist")
+
+    schema_path = benchmark_dir / manifest["artifacts"]["schema"]["path"]
+    if _sha256(schema_path) != manifest["artifacts"]["schema"]["sha256"]:
+        raise ValueError("schema hash mismatch")
+    try:
+        released_schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("invalid released schema") from error
+    if released_schema != benchmark_schema():
+        raise ValueError("released schema does not match the benchmark schema")
+
+    split_path = benchmark_dir / manifest["artifacts"]["split"]["path"]
+    if _sha256(split_path) != manifest["artifacts"]["split"]["sha256"]:
+        raise ValueError("split hash mismatch")
+    if _read_split_ids(split_path) != list(ordered_window_ids):
+        raise ValueError("released split does not match the supplied ordered window IDs")
+
+    if expected_source_hashes is not None:
+        unknown = set(expected_source_hashes) - set(manifest["sources"])
+        if unknown:
+            raise ValueError(f"unknown expected source hash key: {sorted(unknown)[0]}")
+        for name, expected in expected_source_hashes.items():
+            _require_sha256(expected, f"expected {name} source")
+            if manifest["sources"][name]["sha256"] != expected:
+                raise ValueError(f"{name} source hash mismatch")
+
+    for item in manifest["shards"]:
+        shard_path = benchmark_dir / item["path"]
+        if _sha256(shard_path) != item["sha256"]:
+            raise ValueError(f"shard hash mismatch: {item['path']}")
+
+    rows: list[dict[str, Any]] = []
+    observed_sizes: list[int] = []
+    for item in manifest["shards"]:
+        shard_path = benchmark_dir / item["path"]
+        try:
+            shard_rows = list(iter_jsonl_gzip(shard_path))
+        except (EOFError, OSError, ValueError) as error:
+            raise ValueError(f"invalid gzip-compressed shard: {item['path']}") from error
+        rows.extend(shard_rows)
+        observed_sizes.append(len(shard_rows))
+    reported_sizes = [item["rows"] for item in manifest["shards"]]
+    if observed_sizes != reported_sizes:
+        raise ValueError("shard row count mismatch")
+
+    stats = validate_benchmark_records(
+        rows,
+        ordered_window_ids,
+        expected_counts=expected_counts,
+        expected_salient_count=expected_salient_count,
+    )
+    if stats != manifest["counts"]:
+        raise ValueError("manifest count mismatch")
+    return stats
+
+
+def _publish_staged_directory(staged: Path, target: Path) -> None:
+    backup = target.parent / f".{target.name}.backup-{uuid.uuid4().hex}"
+    moved_old = False
+    try:
+        if target.exists():
+            os.replace(target, backup)
+            fsync_parent_directory(target)
+            moved_old = True
+        try:
+            os.replace(staged, target)
+            fsync_parent_directory(target)
+        except BaseException:
+            if moved_old and backup.exists() and not target.exists():
+                os.replace(backup, target)
+                fsync_parent_directory(target)
+                moved_old = False
+            raise
+        if moved_old:
+            shutil.rmtree(backup)
+            fsync_parent_directory(target)
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged)
+        if moved_old and backup.exists() and not target.exists():
+            os.replace(backup, target)
+            fsync_parent_directory(target)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--rcv", type=Path, required=True)
+    parser.add_argument("--salient", type=Path, required=True)
+    parser.add_argument("--split", type=Path, required=True)
+    parser.add_argument("--benchmark-dir", type=Path, required=True)
+    parser.add_argument("--expected-windows", type=int)
+    parser.add_argument("--expected-gaps", type=int)
+    parser.add_argument("--expected-evidence", type=int)
+    parser.add_argument("--expected-salient", type=int)
+    parser.add_argument("--shard-count", type=int, default=BENCHMARK_SHARD_COUNT)
+    parser.add_argument("--overwrite", action="store_true")
+    args = parser.parse_args(argv)
+
+    expected_counts = (args.expected_windows, args.expected_gaps, args.expected_evidence)
+    if any(value is not None for value in expected_counts):
+        if any(value is None for value in expected_counts):
+            parser.error("expected paper counts must be supplied together")
+        checked_counts: tuple[int, int, int] | None = expected_counts  # type: ignore[assignment]
+    else:
+        checked_counts = None
+
+    target = args.benchmark_dir
+    readme_payload: bytes | None = None
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        raise ValueError("benchmark-dir must be a regular directory path")
+    if target.exists():
+        entries = list(target.iterdir())
+        if entries and not args.overwrite:
+            raise ValueError("benchmark-dir is non-empty; use --overwrite")
+        readme = target / "README.md"
+        if args.overwrite and (readme.exists() or readme.is_symlink()):
+            readme_payload = _validate_readme(readme)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=f".{target.name}.stage-", dir=target.parent))
+    try:
+        manifest = export_benchmark(
+            args.source,
+            args.rcv,
+            args.salient,
+            args.split,
+            staged,
+            expected_counts=checked_counts,
+            expected_salient_count=args.expected_salient,
+            shard_count=args.shard_count,
+        )
+        if readme_payload is not None:
+            (staged / "README.md").write_bytes(readme_payload)
+        split_ids = _read_split_ids(args.split)
+        validate_benchmark_directory(
+            staged,
+            split_ids,
+            expected_counts=checked_counts,
+            expected_salient_count=args.expected_salient,
+            expected_source_hashes={
+                "windows": _sha256(args.source),
+                "rcv": _sha256(args.rcv),
+                "salient": _sha256(args.salient),
+            },
+        )
+        _publish_staged_directory(staged, target)
+    finally:
+        if staged.exists():
+            shutil.rmtree(staged)
+    print(json.dumps(manifest["counts"], sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

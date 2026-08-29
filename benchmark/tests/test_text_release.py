@@ -1,14 +1,23 @@
 import copy
+import gzip
+import hashlib
 import json
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
+from remember_benchmark.io import atomic_write_jsonl, atomic_write_jsonl_gzip, iter_jsonl_gzip
 from remember_benchmark.text_release import (
     BENCHMARK_SCHEMA_VERSION,
     build_benchmark_records,
     build_benchmark_records_from_pipeline,
     benchmark_schema,
+    export_benchmark,
+    validate_benchmark_directory,
     validate_benchmark_records,
 )
 from remember_benchmark.pipeline import _merge_salient, flatten_ensemble_to_rcv
@@ -316,3 +325,265 @@ def test_benchmark_schema_declares_closed_text_bearing_contract():
     }
     assert evidence["properties"]["sentence"] == {"type": "string", "minLength": 1}
     assert evidence["properties"]["source_id"]["pattern"] == r"^T(0|[1-9]\d*)-S([1-9]\d*)$"
+
+
+def test_atomic_gzip_jsonl_is_byte_deterministic(tmp_path):
+    rows = [{"window_id": "E_U0000", "text": "한글 text"}]
+    left = tmp_path / "left/a.jsonl.gz"
+    right = tmp_path / "right/b.jsonl.gz"
+
+    atomic_write_jsonl_gzip(left, rows)
+    atomic_write_jsonl_gzip(right, rows)
+
+    assert left.read_bytes() == right.read_bytes()
+    assert list(iter_jsonl_gzip(left)) == rows
+    with gzip.open(left, "rt", encoding="utf-8") as handle:
+        assert handle.read().endswith("\n")
+
+
+@pytest.mark.parametrize(("payload", "message"), [
+    (b'{"ok":1}\n\n', "blank JSONL line.*:2"),
+    (b'[1]\n', "not an object.*:1"),
+    (b'{bad}\n', "invalid JSON.*:1"),
+    (b'\xff\n', "invalid UTF-8.*:1"),
+    (b'{"ok":1}\ntrailing', "invalid JSON.*:2"),
+])
+def test_iter_jsonl_gzip_rejects_invalid_physical_lines(tmp_path, payload, message):
+    path = tmp_path / "invalid.jsonl.gz"
+    with path.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as handle:
+            handle.write(payload)
+
+    with pytest.raises(ValueError, match=message):
+        list(iter_jsonl_gzip(path))
+
+
+def write_export_inputs(root: Path, count: int = 1):
+    source_path = root / "inputs/windows.jsonl"
+    rcv_path = root / "inputs/rcv.jsonl"
+    salient_path = root / "inputs/salient.jsonl"
+    split_path = root / "splits/main_900.txt"
+    source_rows = []
+    rcv_rows = []
+    salient_rows = []
+    for index in range(count):
+        window_id = f"E_U{index:04d}"
+        sources, rcv, salient = valid_fixture()
+        for row in (sources[0], rcv[0], salient[0]):
+            row["window_id"] = window_id
+        source_rows.append(sources[0])
+        rcv_rows.append(rcv[0])
+        salient_rows.append(salient[0])
+    atomic_write_jsonl(source_path, source_rows)
+    atomic_write_jsonl(rcv_path, rcv_rows)
+    atomic_write_jsonl(salient_path, salient_rows)
+    split_path.parent.mkdir(parents=True, exist_ok=True)
+    split_path.write_text(
+        "".join(f"E_U{index:04d}\n" for index in range(count)), encoding="utf-8"
+    )
+    return source_path, rcv_path, salient_path, split_path, root / "benchmark"
+
+
+def read_manifest(benchmark_dir: Path):
+    return json.loads((benchmark_dir / "manifest.json").read_text(encoding="utf-8"))
+
+
+def write_manifest(benchmark_dir: Path, manifest):
+    (benchmark_dir / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def sha256(path: Path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_export_benchmark_writes_ten_balanced_canonical_shards_and_manifest(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path, count=900)
+
+    manifest = export_benchmark(
+        source, rcv, salient, split, benchmark_dir,
+        expected_counts=(900, 900, 900), expected_salient_count=1800,
+    )
+
+    assert [item["path"] for item in manifest["shards"]] == [
+        f"remember_900-{index:05d}-of-00010.jsonl.gz" for index in range(10)
+    ]
+    assert [item["rows"] for item in manifest["shards"]] == [90] * 10
+    assert manifest["counts"]["windows"] == 900
+    assert manifest["authorization"]["redistributable_text"] is True
+    assert manifest["sharding"] == {"count": 10, "policy": "balanced-contiguous-v1"}
+    assert manifest["artifacts"]["split"] == {
+        "path": "../splits/main_900.txt", "sha256": sha256(split),
+    }
+    assert manifest["sources"] == {
+        "windows": {"name": "windows.jsonl", "sha256": sha256(source)},
+        "rcv": {"name": "rcv.jsonl", "sha256": sha256(rcv)},
+        "salient": {"name": "salient.jsonl", "sha256": sha256(salient)},
+    }
+    assert not any(str(tmp_path) in json.dumps(value) for value in manifest["sources"].values())
+    assert validate_benchmark_directory(
+        benchmark_dir,
+        [f"E_U{index:04d}" for index in range(900)],
+        expected_counts=(900, 900, 900),
+        expected_salient_count=1800,
+    ) == manifest["counts"]
+
+
+def test_export_benchmark_balances_small_exports_with_only_trailing_empty_shards(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+
+    manifest = export_benchmark(source, rcv, salient, split, benchmark_dir)
+
+    assert [item["rows"] for item in manifest["shards"]] == [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assert [row["window_id"] for item in manifest["shards"]
+            for row in iter_jsonl_gzip(benchmark_dir / item["path"])] == ["E_U0000"]
+
+
+def test_export_benchmark_rejects_nonpositive_shard_count_before_writing(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+
+    with pytest.raises(ValueError, match="shard_count must be positive"):
+        export_benchmark(source, rcv, salient, split, benchmark_dir, shard_count=0)
+
+    assert not benchmark_dir.exists()
+
+
+def exported_fixture(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+    export_benchmark(source, rcv, salient, split, benchmark_dir)
+    return source, rcv, salient, split, benchmark_dir
+
+
+@pytest.mark.parametrize(("mutation", "message"), [
+    (lambda d, m: (d / m["shards"][0]["path"]).unlink(), "directory contents"),
+    (lambda d, m: (d / "extra.jsonl.gz").write_bytes(b"extra"), "directory contents"),
+    (lambda d, m: m["shards"].__setitem__(slice(0, 2), [m["shards"][1], m["shards"][0]]),
+     "shard order"),
+    (lambda d, m: (d / m["shards"][0]["path"]).write_bytes(
+        bytes([*(d / m["shards"][0]["path"]).read_bytes()[:4], 1,
+               *(d / m["shards"][0]["path"]).read_bytes()[5:]])
+     ), "shard hash mismatch"),
+    (lambda d, m: (d / "schema.json").write_text("{}\n", encoding="utf-8"),
+     "schema hash mismatch"),
+    (lambda d, m: m["sources"]["windows"].update(sha256="INVALID"),
+     "source hash"),
+    (lambda d, m: m["counts"].update(windows=2), "manifest count mismatch"),
+])
+def test_validate_benchmark_directory_rejects_manifest_and_artifact_mutations(
+    tmp_path, mutation, message
+):
+    _, _, _, _, benchmark_dir = exported_fixture(tmp_path)
+    manifest = read_manifest(benchmark_dir)
+    mutation(benchmark_dir, manifest)
+    write_manifest(benchmark_dir, manifest)
+
+    with pytest.raises((ValueError, OSError), match=message):
+        validate_benchmark_directory(benchmark_dir, ["E_U0000"])
+
+
+def test_validate_benchmark_directory_hashes_before_rejecting_corrupt_gzip(tmp_path):
+    _, _, _, _, benchmark_dir = exported_fixture(tmp_path)
+    manifest = read_manifest(benchmark_dir)
+    shard = benchmark_dir / manifest["shards"][0]["path"]
+    shard.write_bytes(b"not gzip")
+    manifest["shards"][0]["sha256"] = sha256(shard)
+    write_manifest(benchmark_dir, manifest)
+
+    with pytest.raises((ValueError, OSError), match="gzip|compressed|Not a gzipped"):
+        validate_benchmark_directory(benchmark_dir, ["E_U0000"])
+
+
+def test_validate_benchmark_directory_rejects_changed_split_hash(tmp_path):
+    _, _, _, split, benchmark_dir = exported_fixture(tmp_path)
+    split.write_text("E_U0000\nE_U0001\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="split hash mismatch"):
+        validate_benchmark_directory(benchmark_dir, ["E_U0000"])
+
+
+def test_validate_benchmark_directory_compares_supplied_source_hashes(tmp_path):
+    _, _, _, _, benchmark_dir = exported_fixture(tmp_path)
+    expected = {name: "0" * 64 for name in ("windows", "rcv", "salient")}
+
+    with pytest.raises(ValueError, match="windows source hash mismatch"):
+        validate_benchmark_directory(
+            benchmark_dir, ["E_U0000"], expected_source_hashes=expected
+        )
+
+
+def cli_command(source, rcv, salient, split, benchmark_dir, *extra):
+    return [
+        sys.executable, "-m", "remember_benchmark.text_release",
+        "--source", str(source), "--rcv", str(rcv), "--salient", str(salient),
+        "--split", str(split), "--benchmark-dir", str(benchmark_dir), *extra,
+    ]
+
+
+def run_cli(command):
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str((Path.cwd() / "benchmark/src").resolve())
+    return subprocess.run(command, env=environment, text=True, capture_output=True, check=False)
+
+
+def test_export_cli_preserves_utf8_readme_and_atomically_replaces_old_directory(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+    benchmark_dir.mkdir()
+    readme_bytes = "# 안내\nkeep this exactly\n".encode()
+    (benchmark_dir / "README.md").write_bytes(readme_bytes)
+    (benchmark_dir / "old.txt").write_text("old", encoding="utf-8")
+
+    completed = run_cli(cli_command(
+        source, rcv, salient, split, benchmark_dir,
+        "--expected-salient", "2", "--shard-count", "10", "--overwrite",
+    ))
+
+    assert completed.returncode == 0, completed.stderr
+    assert (benchmark_dir / "README.md").read_bytes() == readme_bytes
+    assert not (benchmark_dir / "old.txt").exists()
+    assert read_manifest(benchmark_dir)["counts"]["windows"] == 1
+
+
+@pytest.mark.parametrize("readme_kind", ["symlink", "non_utf8"])
+def test_export_cli_rejects_unsafe_readme_before_publication(tmp_path, readme_kind):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+    benchmark_dir.mkdir()
+    marker = benchmark_dir / "old.txt"
+    marker.write_text("old", encoding="utf-8")
+    readme = benchmark_dir / "README.md"
+    if readme_kind == "symlink":
+        target = tmp_path / "actual-readme.md"
+        target.write_text("safe text", encoding="utf-8")
+        readme.symlink_to(target)
+    else:
+        readme.write_bytes(b"\xff\xfe")
+
+    completed = run_cli(cli_command(source, rcv, salient, split, benchmark_dir, "--overwrite"))
+
+    assert completed.returncode != 0
+    assert marker.read_text(encoding="utf-8") == "old"
+    if readme_kind == "symlink":
+        assert readme.is_symlink()
+    else:
+        assert readme.read_bytes() == b"\xff\xfe"
+    assert not (benchmark_dir / "manifest.json").exists()
+
+
+def test_export_cli_refuses_nonempty_directory_without_overwrite_and_partial_counts(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+    benchmark_dir.mkdir()
+    marker = benchmark_dir / "old.txt"
+    marker.write_text("old", encoding="utf-8")
+
+    occupied = run_cli(cli_command(source, rcv, salient, split, benchmark_dir))
+    partial = run_cli(cli_command(
+        source, rcv, salient, split, tmp_path / "other-benchmark",
+        "--expected-windows", "1",
+    ))
+
+    assert occupied.returncode != 0
+    assert "non-empty" in occupied.stderr
+    assert marker.read_text(encoding="utf-8") == "old"
+    assert partial.returncode != 0
+    assert "expected paper counts must be supplied together" in partial.stderr
