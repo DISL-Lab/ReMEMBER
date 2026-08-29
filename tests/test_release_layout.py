@@ -204,8 +204,54 @@ def test_plan_docs_still_scan_machine_paths_but_may_name_historical_research_tre
     (tmp_path / "docs/plans").mkdir(parents=True)
     research_name = "1-" + "research"
     machine_path = "/" + "mnt/private/x"
+    secret_name = "api_" + "key"
+    fallback_name = "token_" + "file"
     plan = tmp_path / "docs/plans/release.md"
-    plan.write_text(f"historical input: {research_name}\nlocal input: {machine_path}\n")
+    plan.write_text(
+        f"historical input: {research_name}\nlocal input: {machine_path}\n"
+        f"{secret_name}: abcdefgh\n{fallback_name}: credentials.txt\n"
+    )
     failures = "\n".join(validator.scan_release(tmp_path)["leakage"]["failures"])
     assert "machine-local absolute path: docs/plans/release.md" in failures
     assert "research-tree runtime reference: docs/plans/release.md" not in failures
+    assert "credential literal/assignment: docs/plans/release.md" in failures
+    secret_failure = "secret" + "-file fallback: docs/plans/release.md"
+    assert secret_failure in failures
+
+
+def test_superpowers_docs_may_name_historical_tree_but_still_scan_machine_paths(tmp_path):
+    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    path = tmp_path / "docs/superpowers/specs/release.md"
+    path.parent.mkdir(parents=True)
+    historical = "1-" + "research"
+    machine_path = "/" + "mnt/private/source"
+    secret_name = "api_" + "key"
+    fixed_gpu = "CUDA_VISIBLE_DEVICES" + "=0"
+    detached_runner = "no" + "hup python run.py"
+    path.write_text(
+        f"source: {historical}\nlocal: {machine_path}\n{secret_name}: abcdefgh\n"
+        f"gpu: {fixed_gpu}\nrunner: {detached_runner}\n"
+    )
+
+    failures = "\n".join(validator.scan_release(tmp_path)["leakage"]["failures"])
+    assert "research-tree runtime reference" not in failures
+    assert "fixed GPU assignment" not in failures
+    assert "detached runtime command" not in failures
+    assert "machine-local absolute path: docs/superpowers/specs/release.md" in failures
+    assert "credential literal/assignment: docs/superpowers/specs/release.md" in failures
+
+
+def test_source_scan_ignores_only_root_git_worktree_metadata_file(tmp_path):
+    shutil.copytree(ROOT / "dataset", tmp_path / "dataset")
+    (tmp_path / "benchmark").mkdir()
+    gitdir_metadata = "gitdir: /" + "mnt/private/release/.git/worktrees/release\n"
+    (tmp_path / ".git").write_text(gitdir_metadata)
+    (tmp_path / "benchmark/copied-metadata.txt").write_text(gitdir_metadata)
+
+    failures = "\n".join(validator.scan_release(tmp_path)["leakage"]["failures"])
+    assert "machine-local absolute path: .git" not in failures
+    assert "machine-local absolute path: benchmark/copied-metadata.txt" in failures
+
+    (tmp_path / ".git").write_text("notes: /" + "mnt/private/release\n")
+    failures = "\n".join(validator.scan_release(tmp_path)["leakage"]["failures"])
+    assert "machine-local absolute path: .git" in failures

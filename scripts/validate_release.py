@@ -129,6 +129,15 @@ def _payload_scan(root: Path) -> list[str]:
     return failures
 
 
+def _is_historical_document(relative: Path) -> bool:
+    parts = relative.parts
+    return (
+        parts[:2] == ("docs", "plans")
+        or parts[:3] == ("docs", "superpowers", "specs")
+        or parts[:3] == ("docs", "superpowers", "plans")
+    )
+
+
 def _source_scan(root: Path) -> list[str]:
     failures: list[str] = []
     research_names = ("0-" + "dataset", "1-" + "research", "2-" + "rebuttal")
@@ -155,14 +164,19 @@ def _source_scan(root: Path) -> list[str]:
         except UnicodeDecodeError:
             failures.append(f"non-UTF8 source asset: {relative}")
             continue
+        if relative == Path(".git") and re.fullmatch(
+                r"gitdir: (?:/[^\r\n]+|[A-Za-z]:[\\/][^\r\n]+)\r?\n?", text):
+            continue
         intentional_tmp_output = "/" + "tmp/remember-smoke.jsonl"
         scan_text = re.sub(
             re.escape(intentional_tmp_output) + r"(?=$|[\s\"'`\\])", "", text
         ).replace("/proc/self/fd", "")
         if absolute.search(scan_text): failures.append(f"machine-local absolute path: {relative}")
-        is_plan = relative.parts[:2] == ("docs", "plans")
-        if not is_plan and fixed_gpu.search(text): failures.append(f"fixed GPU assignment: {relative}")
-        if not is_plan and "no" + "hup" in text: failures.append(f"detached runtime command: {relative}")
+        is_historical_document = _is_historical_document(relative)
+        if not is_historical_document and fixed_gpu.search(text):
+            failures.append(f"fixed GPU assignment: {relative}")
+        if not is_historical_document and "no" + "hup" in text:
+            failures.append(f"detached runtime command: {relative}")
         safe_env_name = re.compile(r"[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|SECRET|PASSWORD)")
         unsafe_python_secret = any(
             not safe_env_name.fullmatch(match.group(2)) for match in python_secret.finditer(text)
@@ -170,13 +184,13 @@ def _source_scan(root: Path) -> list[str]:
         unsafe_yaml_secret = any(
             not safe_env_name.fullmatch(match.group(1)) for match in yaml_secret.finditer(text)
         )
-        if not is_plan and (any(prefix in text for prefix in credential_prefixes)
+        if (any(prefix in text for prefix in credential_prefixes)
                 or unsafe_python_secret or unsafe_yaml_secret):
             failures.append(f"credential literal/assignment: {relative}")
-        if not is_plan and any(name in text for name in research_names):
+        if not is_historical_document and any(name in text for name in research_names):
             failures.append(f"research-tree runtime reference: {relative}")
         fallback_pattern = r"(?i)(?:" + "key|" + "secret|" + "token" + r")[_-]?file"
-        if not is_plan and re.search(fallback_pattern, text):
+        if re.search(fallback_pattern, text):
             failures.append(f"{'secret' + '-file'} fallback: {relative}")
     return failures
 
