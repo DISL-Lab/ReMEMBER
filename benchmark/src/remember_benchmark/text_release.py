@@ -14,6 +14,7 @@ from .salient import expand_window_sentences
 BENCHMARK_SCHEMA_VERSION = "2.0"
 BENCHMARK_SHARD_COUNT = 10
 BENCHMARK_ROWS_PER_SHARD = 90
+PIPELINE_PUBLIC_GAP_REASON = "Resolve the target utterance using the validated evidence."
 
 SOURCE_VALUES = ("evermembench", "locomo", "realtalk")
 BENCHMARK_RANGE_VALUES = tuple(value for value in RANGE_VALUES if value != "other")
@@ -180,7 +181,11 @@ def _build_evidence(
 
 
 def _build_gaps(
-    history: list[dict[str, Any]], turns: list[dict[str, Any]], rows: list[dict[str, Any]], window_id: str
+    history: list[dict[str, Any]],
+    turns: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    window_id: str,
+    gap_reason_override: str | None = None,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen_indices: set[int] = set()
@@ -211,7 +216,9 @@ def _build_gaps(
             "target_sentence_numbers": list(numbers),
             "target_sentence": expected_target,
             "gap_type": row.get("gap_type"),
-            "gap_reason": row.get("gap_reason"),
+            "gap_reason": (
+                row.get("gap_reason") if gap_reason_override is None else gap_reason_override
+            ),
             "evidence": _build_evidence(history, row.get("validated"), location),
         })
     return result
@@ -293,7 +300,13 @@ def build_benchmark_records(
             "history": history,
             "turns": turns,
             "salient_utterances": _build_salient(salient[window_id], turns, window_id),
-            "gaps": _build_gaps(history, turns, rcv[window_id], window_id),
+            "gaps": _build_gaps(
+                history,
+                turns,
+                rcv[window_id],
+                window_id,
+                PIPELINE_PUBLIC_GAP_REASON if "domain" not in raw_source else None,
+            ),
         })
     validate_benchmark_records(result, split_ids)
     return result
@@ -330,7 +343,7 @@ def _validate_turns(value: Any, location: str) -> list[dict[str, Any]]:
 
 
 def _nonempty_string(value: Any, location: str) -> None:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{location} must be a non-empty string")
 
 
@@ -515,7 +528,7 @@ def benchmark_schema() -> dict[str, Any]:
         },
         "target_sentence": _string_schema(),
         "gap_type": {"enum": ["A", "C", "L"]},
-        "gap_reason": _string_schema(),
+        "gap_reason": {"type": "string", "minLength": 1, "pattern": r"\S"},
         "evidence": {"type": "array", "items": evidence},
     })
     properties = {

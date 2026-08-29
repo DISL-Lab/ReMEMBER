@@ -11,6 +11,7 @@ from remember_benchmark.text_release import (
     benchmark_schema,
     validate_benchmark_records,
 )
+from remember_benchmark.pipeline import _merge_salient, flatten_ensemble_to_rcv
 
 
 def valid_fixture():
@@ -198,6 +199,56 @@ def test_build_benchmark_records_from_pipeline_resolves_missing_text_and_domain(
     assert "gap_reasons" not in json.dumps(row)
 
 
+def test_pipeline_chain_replaces_composed_reasons_and_strips_private_explanations():
+    sources, _, _ = valid_fixture()
+    source_name = sources[0].pop("domain")
+    window = {**sources[0], "source": source_name, "range": "8k~16k"}
+    voted = [{
+        "schema_version": "1.0", "window_id": "E_U0000", "gaps": [{
+            "gap_idx": 0, "target_sentence_numbers": [0, 1],
+            "gap_type": "A", "vote_count": 3,
+        }],
+    }]
+    private_reasons = {
+        "gemma": "gemma private rationale",
+        "GLM": "GLM private rationale",
+        "Qwen": "Qwen private rationale",
+    }
+    rows_by_model = {
+        model: [{"window_id": "E_U0000", "gaps": [{
+            "target_sentence_numbers": [0, 1], "gap_reason": reason,
+        }]}]
+        for model, reason in private_reasons.items()
+    }
+    merged = _merge_salient([window], voted, rows_by_model)
+    ensemble = [{
+        "window_id": "E_U0000", "range": "8k~16k", "gaps": [{
+            "gap_idx": 0, "target_sentence_numbers": [0, 1], "gap_type": "A",
+            "evidence": [{
+                "source_id": "T0-S2", "status": "resolve", "validation": 1,
+                "vote_count": 3, "votes": {"gemma": 1, "GLM": 1, "Qwen": 1},
+                "reasoning": "validator chain of thought",
+                "private_explanation": "do not publish this explanation",
+            }],
+        }],
+    }]
+    private_rcv = flatten_ensemble_to_rcv(ensemble, merged)
+
+    [row] = build_benchmark_records_from_pipeline([window], private_rcv, merged, ["E_U0000"])
+
+    assert row["gaps"][0]["gap_reason"] == (
+        "Resolve the target utterance using the validated evidence."
+    )
+    serialized = json.dumps(row)
+    for forbidden in (
+        "gemma:", "GLM:", "Qwen:",
+        "gemma private rationale", "GLM private rationale", "Qwen private rationale",
+        "gap_reasons", "reasoning", "validator chain of thought",
+        "private_explanation", "do not publish this explanation",
+    ):
+        assert forbidden not in serialized
+
+
 def test_validate_benchmark_records_rechecks_text_and_returns_literal_counts():
     row = built_row()
 
@@ -213,6 +264,14 @@ def test_validate_benchmark_records_rechecks_text_and_returns_literal_counts():
         "by_source": {"evermembench": 1},
         "by_range": {"8k~16k": 1},
     }
+
+
+def test_validate_benchmark_records_rejects_whitespace_only_gap_reason():
+    row = built_row()
+    row["gaps"][0]["gap_reason"] = "   "
+
+    with pytest.raises(ValueError, match="gap_reason.*non-empty"):
+        validate_benchmark_records([row], ["E_U0000"])
 
 
 @pytest.mark.parametrize(("mutation", "message"), [
@@ -252,6 +311,8 @@ def test_benchmark_schema_declares_closed_text_bearing_contract():
     assert all(item["additionalProperties"] is False for item in (turn, salient, gap, evidence, votes))
     assert turn["properties"]["dialogue"] == {"type": "string", "minLength": 1}
     assert salient["properties"]["sentences"]["items"] == {"type": "string", "minLength": 1}
-    assert gap["properties"]["gap_reason"] == {"type": "string", "minLength": 1}
+    assert gap["properties"]["gap_reason"] == {
+        "type": "string", "minLength": 1, "pattern": r"\S",
+    }
     assert evidence["properties"]["sentence"] == {"type": "string", "minLength": 1}
     assert evidence["properties"]["source_id"]["pattern"] == r"^T(0|[1-9]\d*)-S([1-9]\d*)$"
