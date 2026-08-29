@@ -57,6 +57,10 @@ def _fixture(tmp_path):
         "sources": {"normalized": str(source)},
         "models": {"gemma": "fixture/gemma", "GLM": "fixture/glm", "Qwen": "fixture/qwen"},
         "thresholds": {"salient": 3, "chunk_filter": 3, "validation": 2},
+        # Three 4000-token turns give spans (0,4000) (4000,8000) (8000,12000), so a
+        # window starting at exactly 8000 keeps two history turns, selects the third,
+        # and ends at 8001 -> range "8k~16k". The equalities are load-bearing: the v2
+        # schema rejects the "other" range, and the stride keeps this to one window.
         "windowing": {"start_tokens": 8000, "size_tokens": 1,
                       "strides": {"evermembench": 99999}},
         "chunking": {"tokens": 128000, "overlap_tokens": 0, "chunks_per_group": 16},
@@ -189,6 +193,7 @@ def _complete_build(tmp_path):
     ("source", "input hash mismatch"),
     ("split", "hash mismatch"),
     ("stage_output", "output hash mismatch"),
+    ("merged_salient", "output hash mismatch"),
     ("missing_manifest", "manifest"),
     ("corrupt_manifest", "manifest"),
     ("orphan_temp", "temporary"),
@@ -210,6 +215,9 @@ def test_resume_rejects_every_stale_stage_signal(tmp_path, change, match):
         split.write_text("E_U0000\nE_U9999\n")
     elif change == "stage_output":
         path = work / "windows.jsonl"
+        path.write_text(path.read_text() + path.read_text())
+    elif change == "merged_salient":
+        path = work / "salient/ensemble.jsonl"
         path.write_text(path.read_text() + path.read_text())
     elif change == "missing_manifest":
         (work / "windows.jsonl.manifest.json").unlink()
@@ -239,6 +247,35 @@ def test_resume_rejects_missing_or_corrupt_release_artifacts(tmp_path, relative,
 
 
 SHARD_NAMES = [f"remember_900-{index:05d}-of-00010.jsonl.gz" for index in range(10)]
+
+
+def test_flattened_salient_count_reads_the_merged_rows_not_the_record_builder(tmp_path):
+    path = tmp_path / "merged_salient.jsonl"
+    rows = [
+        {"window_id": "E_U0000", "gaps": [{"target_sentence_numbers": [0, 2]},
+                                          {"target_sentence_numbers": [5]}]},
+        {"window_id": "E_U0001", "gaps": [{"target_sentence_numbers": [1]}]},
+        {"window_id": "E_U0002", "gaps": [{"target_sentence_numbers": [0, 1, 2, 3]}]},
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    # Flattened per sentence number, restricted to the split, with no text
+    # resolution and no record construction.
+    assert pipeline._flattened_salient_count(path, ["E_U0000", "E_U0001"]) == 4
+    assert pipeline._flattened_salient_count(path, ["E_U0002"]) == 4
+    assert pipeline._flattened_salient_count(path, []) == 0
+
+
+def test_publication_aborts_when_the_independent_salient_count_disagrees(tmp_path, monkeypatch):
+    config, _, _ = _fixture(tmp_path)
+    work, out = tmp_path / "work", tmp_path / "out"
+    # The exporter's own salient total must agree with a number derived by a
+    # different route; a disagreement has to abort rather than be ratified.
+    monkeypatch.setattr(pipeline, "_flattened_salient_count", lambda *args: 99)
+    with pytest.raises(ValueError, match="salient count mismatch: expected 99, got 1"):
+        build(config, work, out, {name: FixtureProvider() for name in config["models"]}, counter=WordCounter())
+    assert not out.exists()
+    assert not (work / "release/release.manifest.json").exists()
+
 
 
 def test_release_inventory_binds_builder_owned_sources_and_benchmark_counts(tmp_path):
@@ -305,6 +342,18 @@ def test_resume_rejects_a_tampered_private_rcv_bridge(tmp_path):
     config, _, _, providers, work, out = _complete_build(tmp_path)
     private = work / "release/private_rcv.jsonl"
     private.write_text(private.read_text() + private.read_text())
+    # The bridge is hashed into the release identity, so it fails at that gate
+    # rather than at the later inventory-input comparison.
+    with pytest.raises(ValueError, match="release configuration hash mismatch"):
+        build(config, work, out, providers, counter=WordCounter(), resume=True)
+
+
+def test_resume_rejects_a_rewritten_inventory_input_record(tmp_path):
+    config, _, _, providers, work, out = _complete_build(tmp_path)
+    inventory_path = work / "release/release.manifest.json"
+    inventory = json.loads(inventory_path.read_text())
+    inventory["inputs"][0]["sha256"] = "0" * 64
+    inventory_path.write_text(json.dumps(inventory) + "\n")
     with pytest.raises(ValueError, match="release input hash mismatch"):
         build(config, work, out, providers, counter=WordCounter(), resume=True)
 

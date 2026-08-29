@@ -22,8 +22,7 @@ from .release import export_annotations, sanitize_annotations, validate_annotati
 from .salient import expand_window_sentences, run_salient
 from .schemas import NormalizedDialogue, NormalizedTurn
 from .sources import normalize_sources
-from .text_release import (build_benchmark_records_from_pipeline, export_benchmark,
-                           validate_benchmark_directory)
+from .text_release import export_benchmark, validate_benchmark_directory
 from .chunk_filter import Cl100kCounter, run_chunk_filter
 from .validation import run_validation
 from .windows import build_windows
@@ -103,7 +102,6 @@ BENCHMARK_SHARD_PATHS = tuple(
     Path("benchmark") / f"remember_900-{index:05d}-of-00010.jsonl.gz"
     for index in range(10)
 )
-BENCHMARK_SHARDS = frozenset(BENCHMARK_SHARD_PATHS)
 V1_RELEASE_ARTIFACTS = (
     Path("annotations/remember_900_annotations.jsonl"), Path("schema.json"),
     Path("metadata.json"), Path("splits/main_900.txt"),
@@ -394,9 +392,39 @@ def _release_inventory_path(work_dir: Path) -> Path:
     return work_dir / "release" / "release.manifest.json"
 
 
-def _benchmark_manifest_counts(output_dir: Path) -> Any:
-    manifest = json.loads((output_dir / "benchmark/manifest.json").read_text(encoding="utf-8"))
-    return manifest.get("counts")
+def _flattened_salient_count(salient_path: Path, split_ids: Sequence[str]) -> int:
+    """Count flattened salient utterances straight from the merged salient rows.
+
+    This deliberately avoids the record builder the exporter itself uses: the
+    exporter's own count has to agree with a number derived by a different route,
+    so a drift in its flattening aborts publication instead of being ratified.
+    """
+    selected = set(split_ids)
+    total = 0
+    for row in iter_jsonl(salient_path):
+        if not isinstance(row, dict) or row.get("window_id") not in selected:
+            continue
+        groups = row.get("gaps")
+        if not isinstance(groups, list):
+            raise ValueError(f"{row.get('window_id')}: merged salient gaps must be a list")
+        for group in groups:
+            numbers = group.get("target_sentence_numbers") if isinstance(group, dict) else None
+            if not isinstance(numbers, list):
+                raise ValueError(f"{row.get('window_id')}: merged salient group has no target numbers")
+            total += len(numbers)
+    return total
+
+
+def _benchmark_manifest_counts(output_dir: Path) -> dict[str, Any]:
+    path = output_dir / "benchmark/manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"published benchmark manifest is unreadable: {path}") from exc
+    counts = manifest.get("counts") if isinstance(manifest, dict) else None
+    if not isinstance(counts, dict):
+        raise ValueError(f"published benchmark manifest has no counts block: {path}")
+    return counts
 
 
 def _write_release_inventory(work_dir: Path, output_dir: Path, split_path: Path,
@@ -413,7 +441,23 @@ def _write_release_inventory(work_dir: Path, output_dir: Path, split_path: Path,
     _atomic_text(_release_inventory_path(work_dir), canonical_json(payload) + "\n")
 
 
-def _build_staged_release(staged: Path, windows_path: Path, private_path: Path,
+def _require_release_inputs(inputs: Sequence[Path]) -> None:
+    for path in inputs:
+        if not Path(path).is_file():
+            raise ResumeMismatch(f"release input is missing: {path}")
+
+
+def _release_identity(*, expected: tuple[int, int, int], model_ids: Mapping[str, str],
+                      threshold: Mapping[str, Any], windows_path: Path, salient_path: Path,
+                      private_path: Path, split_path: Path) -> dict[str, Any]:
+    """Hash every source this run published from; all four files must exist."""
+    return {"pipeline": PIPELINE_VERSION, "expected_counts": list(expected), "models": dict(model_ids),
+            "thresholds": _jsonable(threshold), "split_sha256": sha256_file(split_path),
+            "windows_sha256": sha256_file(windows_path), "salient_sha256": sha256_file(salient_path),
+            "private_rcv_sha256": sha256_file(private_path)}
+
+
+def _build_staged_release(staged: Path, *, windows_path: Path, private_path: Path,
                           salient_path: Path, split_path: Path,
                           split_ids: Sequence[str], expected: tuple[int, int, int]) -> None:
     staged_split = staged / "splits/main_900.txt"
@@ -421,13 +465,10 @@ def _build_staged_release(staged: Path, windows_path: Path, private_path: Path,
     annotation = staged / "annotations/remember_900_annotations.jsonl"
     export_annotations(private_path, staged_split, annotation, staged / "metadata.json", staged / "schema.json")
     validate_annotations(_rows(annotation), split_ids, expected)
-    benchmark_rows = build_benchmark_records_from_pipeline(
-        iter_jsonl(windows_path), iter_jsonl(private_path), iter_jsonl(salient_path), split_ids,
-    )
-    expected_salient = sum(len(row["salient_utterances"]) for row in benchmark_rows)
     export_benchmark(
         windows_path, private_path, salient_path, staged_split, staged / "benchmark",
-        expected_counts=expected, expected_salient_count=expected_salient,
+        expected_counts=expected,
+        expected_salient_count=_flattened_salient_count(salient_path, split_ids),
         construction="pipeline-derived",
     )
     _validate_public_tree(staged, allow_absent=False)
@@ -451,9 +492,7 @@ def _verify_release(work_dir: Path, output_dir: Path, split_path: Path, expected
     for path in (*(output_dir / relative for relative in RELEASE_ARTIFACTS), inventory_path):
         if not path.is_file():
             raise ResumeMismatch(f"release artifact is missing: {path}")
-    for path in inputs:
-        if not Path(path).is_file():
-            raise ResumeMismatch(f"release input is missing: {path}")
+    _require_release_inputs(inputs)
     try:
         inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
         meta = json.loads(metadata.read_text(encoding="utf-8"))
@@ -627,15 +666,17 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
     counts_map = config.get("expected_counts", {})
     expected = tuple(int(counts_map[key]) for key in ("windows", "gaps", "evidence"))
     private_path = work_dir / "release" / "private_rcv.jsonl"
-    release_config = {"pipeline": PIPELINE_VERSION, "expected_counts": list(expected), "models": model_ids,
-                      "thresholds": _jsonable(threshold), "split_sha256": sha256_file(split_path),
-                      "windows_sha256": sha256_file(windows_path),
-                      "salient_sha256": sha256_file(merged_salient_path)}
     # Both published artifacts are bound to this run's own work-tree sources; no
-    # historical research path is ever consulted at runtime.
+    # historical research path is ever consulted at runtime. The private bridge is
+    # written by this stage, so the identity is built at each point of use.
     release_inputs = [windows_path, merged_salient_path, ensemble_path, private_path, split_path]
+    identity = lambda: _release_identity(
+        expected=expected, model_ids=model_ids, threshold=threshold, windows_path=windows_path,
+        salient_path=merged_salient_path, private_path=private_path, split_path=split_path)
     if mode == "resume":
-        _verify_release(work_dir, output_dir, split_path, expected, inputs=release_inputs, config=release_config)
+        _require_release_inputs(release_inputs)
+        _verify_release(work_dir, output_dir, split_path, expected, inputs=release_inputs,
+                        config=identity())
     else:
         release_targets = [*(output_dir / relative for relative in RELEASE_ARTIFACTS),
                            _release_inventory_path(work_dir)]
@@ -651,13 +692,14 @@ def build(config: Mapping[str, Any], work_dir: Path, output_dir: Path, provider:
         staged = Path(tempfile.mkdtemp(prefix=f".{output_dir.name}.release-", dir=output_dir.parent))
         try:
             _build_staged_release(
-                staged, windows_path, private_path, merged_salient_path, split_path,
-                split_ids, expected,
+                staged, windows_path=windows_path, private_path=private_path,
+                salient_path=merged_salient_path, split_path=split_path,
+                split_ids=split_ids, expected=expected,
             )
             _commit_release_transaction(
                 staged, output_dir, overwrite=mode == "overwrite",
                 write_inventory=lambda: _write_release_inventory(
-                    work_dir, output_dir, split_path, release_inputs, release_config),
+                    work_dir, output_dir, split_path, release_inputs, identity()),
                 inventory_path=_release_inventory_path(work_dir),
             )
         finally:
