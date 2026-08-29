@@ -1,0 +1,257 @@
+import copy
+import json
+import re
+
+import pytest
+
+from remember_benchmark.text_release import (
+    BENCHMARK_SCHEMA_VERSION,
+    build_benchmark_records,
+    build_benchmark_records_from_pipeline,
+    benchmark_schema,
+    validate_benchmark_records,
+)
+
+
+def valid_fixture():
+    sources = [{
+        "window_id": "E_U0000",
+        "domain": "evermembench",
+        "tok_start": 7000,
+        "tok_end": 8024,
+        "history": [{
+            "time": "09:00", "speaker": "A",
+            "dialogue": "First support. Second support.",
+            "topic": 1, "img_url": "not-published",
+        }],
+        "turns": [{
+            "time": "10:00", "speaker": "B",
+            "dialogue": "The plan was approved. Work starts now.",
+            "message_index": 3,
+        }],
+    }]
+    rcv = [{
+        "window_id": "E_U0000", "range": "8k~16k", "gap_idx": 0,
+        "sentence_numbers": [0, 1],
+        "target_sentence": "The plan was approved. Work starts now.",
+        "gap_type": "A", "gap_reason": "The earlier support is missing.",
+        "validated": [{
+            "source_id": "T0-S2", "sentence": "Second support.",
+            "status": "resolve", "validation": 1, "vote_count": 3,
+            "votes": {"gemma": 1, "GLM": 1, "Qwen": 1},
+        }],
+    }]
+    salient = [{
+        "window_id": "E_U0000",
+        "gap_analysis": [{
+            "sentence_numbers": [0, 1],
+            "sentences": ["The plan was approved.", "Work starts now."],
+            "gap_type": "A", "vote_count": 3,
+        }],
+    }]
+    return sources, rcv, salient
+
+
+def built_row():
+    sources, rcv, salient = valid_fixture()
+    return build_benchmark_records(sources, rcv, salient, ["E_U0000"])[0]
+
+
+def test_build_benchmark_records_binds_every_coordinate_to_text():
+    sources, rcv, salient = valid_fixture()
+
+    [row] = build_benchmark_records(sources, rcv, salient, ["E_U0000"])
+
+    assert row["schema_version"] == "2.0"
+    assert row["source"] == row["domain"] == "evermembench"
+    assert row["history"] == [{
+        "turn_index": 0, "time": "09:00", "speaker": "A",
+        "dialogue": "First support. Second support.",
+    }]
+    assert row["turns"] == [{
+        "turn_index": 0, "time": "10:00", "speaker": "B",
+        "dialogue": "The plan was approved. Work starts now.",
+    }]
+    assert row["salient_utterances"] == [
+        {
+            "salient_idx": 0, "sentence_numbers": [0],
+            "sentences": ["The plan was approved."], "gap_type": "A", "vote_count": 3,
+        },
+        {
+            "salient_idx": 1, "sentence_numbers": [1],
+            "sentences": ["Work starts now."], "gap_type": "A", "vote_count": 3,
+        },
+    ]
+    assert row["gaps"] == [{
+        "gap_idx": 0,
+        "target_sentence_numbers": [0, 1],
+        "target_sentence": "The plan was approved. Work starts now.",
+        "gap_type": "A",
+        "gap_reason": "The earlier support is missing.",
+        "evidence": [{
+            "source_id": "T0-S2", "sentence": "Second support.",
+            "status": "resolve", "validation": 1, "vote_count": 3,
+            "votes": {"gemma": 1, "GLM": 1, "Qwen": 1},
+        }],
+    }]
+    assert "img_url" not in json.dumps(row)
+
+
+@pytest.mark.parametrize(("mutation", "message"), [
+    (lambda s, r, a: s.append(dict(s[0])), "duplicate source window_id"),
+    (lambda s, r, a: r[0].update(sentence_numbers=[99]), "target coordinate"),
+    (lambda s, r, a: r[0].update(target_sentence="wrong"), "target text mismatch"),
+    (lambda s, r, a: r[0]["validated"][0].update(source_id="T0-S0"), "evidence coordinate"),
+    (lambda s, r, a: r[0]["validated"][0].update(sentence="wrong"), "evidence text mismatch"),
+    (lambda s, r, a: a[0]["gap_analysis"][0].update(sentences=["wrong"]), "salient text mismatch"),
+    (lambda s, r, a: s[0]["history"][0].update(dialogue=1), "history[0].dialogue"),
+])
+def test_build_benchmark_records_rejects_unverifiable_text(mutation, message):
+    sources, rcv, salient = valid_fixture()
+    mutation(sources, rcv, salient)
+    with pytest.raises(ValueError, match=re.escape(message)):
+        build_benchmark_records(sources, rcv, salient, ["E_U0000"])
+
+
+@pytest.mark.parametrize(("mutation", "message"), [
+    (lambda s, r, a: s.clear(), "missing source row"),
+    (lambda s, r, a: a.clear(), "missing salient row"),
+    (lambda s, r, a: a.append(dict(a[0])), "duplicate salient window_id"),
+    (lambda s, r, a: r[0].update(range="16k~32k"), "pipeline range"),
+    (lambda s, r, a: r.append(dict(r[0], range="16k~32k", gap_idx=1)), "inconsistent range"),
+    (lambda s, r, a: r.append(dict(r[0])), "duplicate gap_idx"),
+    (lambda s, r, a: r[0]["validated"].append(dict(r[0]["validated"][0])), "duplicate evidence"),
+])
+def test_build_benchmark_records_rejects_incomplete_or_ambiguous_joins(mutation, message):
+    sources, rcv, salient = valid_fixture()
+    if message == "pipeline range":
+        sources[0]["range"] = "8k~16k"
+    mutation(sources, rcv, salient)
+    with pytest.raises(ValueError, match=re.escape(message)):
+        build_benchmark_records(sources, rcv, salient, ["E_U0000"])
+
+
+@pytest.mark.parametrize(("split_id", "source_value", "message"), [
+    ("X_U0000", "evermembench", "unknown source prefix"),
+    ("E_U0000", "locomo", "domain/source does not match window ID"),
+])
+def test_build_benchmark_records_rejects_invalid_source_identity(split_id, source_value, message):
+    sources, rcv, salient = valid_fixture()
+    sources[0]["window_id"] = rcv[0]["window_id"] = salient[0]["window_id"] = split_id
+    sources[0]["domain"] = source_value
+    with pytest.raises(ValueError, match=re.escape(message)):
+        build_benchmark_records(sources, rcv, salient, [split_id])
+
+
+def test_build_benchmark_records_filters_unvalidated_evidence_and_omits_empty_targets():
+    sources, rcv, salient = valid_fixture()
+    rejected = dict(rcv[0]["validated"][0], source_id="T0-S1", sentence="First support.", validation=0)
+    rcv[0]["validated"].append(rejected)
+    rcv.append({
+        **copy.deepcopy(rcv[0]),
+        "gap_idx": 7,
+        "sentence_numbers": [1],
+        "target_sentence": "  ",
+        "validated": [dict(rcv[0]["validated"][0])],
+    })
+
+    [row] = build_benchmark_records(sources, rcv, salient, ["E_U0000"])
+
+    assert [gap["gap_idx"] for gap in row["gaps"]] == [0]
+    assert [item["source_id"] for item in row["gaps"][0]["evidence"]] == ["T0-S2"]
+
+
+def test_build_benchmark_records_filters_before_validating_unselected_rows():
+    sources, rcv, salient = valid_fixture()
+    sources.insert(0, {"window_id": "not-selected", "history": "invalid"})
+    rcv.insert(0, {"window_id": "not-selected", "target_sentence": 1})
+    salient.insert(0, {"window_id": "not-selected", "gap_analysis": "invalid"})
+
+    rows = build_benchmark_records(iter(sources), iter(rcv), iter(salient), ["E_U0000"])
+
+    assert [row["window_id"] for row in rows] == ["E_U0000"]
+
+
+def test_build_benchmark_records_from_pipeline_resolves_missing_text_and_domain():
+    sources, rcv, salient = valid_fixture()
+    source_name = sources[0].pop("domain")
+    window = {**sources[0], "source": source_name, "range": "8k~16k"}
+    rcv[0]["target_sentence"] = ["The plan was approved.", "Work starts now."]
+    rcv[0]["validated"][0].pop("sentence")
+    salient = [{
+        "window_id": "E_U0000", "gaps": [{
+            "gap_idx": 0, "target_sentence_numbers": [0, 1],
+            "target_sentence": ["The plan was approved.", "Work starts now."],
+            "gap_type": "A", "gap_reason": "The earlier support is missing.",
+            "vote_count": 3,
+        }],
+    }]
+
+    [row] = build_benchmark_records_from_pipeline([window], rcv, salient, ["E_U0000"])
+
+    assert row["source"] == row["domain"] == "evermembench"
+    assert row["gaps"][0]["target_sentence"] == "The plan was approved. Work starts now."
+    assert row["gaps"][0]["evidence"][0]["sentence"] == "Second support."
+    assert [item["sentences"] for item in row["salient_utterances"]] == [
+        ["The plan was approved."], ["Work starts now."],
+    ]
+    assert "gap_reasons" not in json.dumps(row)
+
+
+def test_validate_benchmark_records_rechecks_text_and_returns_literal_counts():
+    row = built_row()
+
+    stats = validate_benchmark_records(
+        [row], ["E_U0000"], expected_counts=(1, 1, 1), expected_salient_count=2
+    )
+
+    assert stats == {
+        "windows": 1,
+        "gaps": 1,
+        "evidence": 1,
+        "salient_utterances": 2,
+        "by_source": {"evermembench": 1},
+        "by_range": {"8k~16k": 1},
+    }
+
+
+@pytest.mark.parametrize(("mutation", "message"), [
+    (lambda row: row.update(reasoning="leak"), "invalid keys"),
+    (lambda row: row["gaps"][0].update(reasons=["leak"]), "invalid keys"),
+    (lambda row: row["gaps"][0].update(target_sentence="wrong"), "target text mismatch"),
+    (lambda row: row["gaps"].append(copy.deepcopy(row["gaps"][0])), "duplicate gap_idx"),
+    (lambda row: row["gaps"][0]["evidence"][0].update(sentence="wrong"), "evidence text mismatch"),
+    (lambda row: row["gaps"][0]["evidence"][0]["votes"].update(gemma=0), "evidence fields"),
+    (lambda row: row["salient_utterances"][0].update(sentences=["wrong"]), "salient text mismatch"),
+    (lambda row: row["salient_utterances"][0].update(vote_count=0), "salient vote_count"),
+])
+def test_validate_benchmark_records_rejects_schema_and_semantic_abuse(mutation, message):
+    row = built_row()
+    mutation(row)
+    with pytest.raises(ValueError, match=re.escape(message)):
+        validate_benchmark_records([row], ["E_U0000"])
+
+
+def test_benchmark_schema_declares_closed_text_bearing_contract():
+    schema = benchmark_schema()
+    window = schema["properties"]
+    turn = window["history"]["items"]
+    salient = window["salient_utterances"]["items"]
+    gap = window["gaps"]["items"]
+    evidence = gap["properties"]["evidence"]["items"]
+
+    assert BENCHMARK_SCHEMA_VERSION == "2.0"
+    assert schema["additionalProperties"] is False
+    assert schema["required"] == sorted(window)
+    assert window["window_id"]["pattern"] == r"^[ELR]_U\d{4,}$"
+    assert window["source"]["enum"] == ["evermembench", "locomo", "realtalk"]
+    assert window["range"]["enum"] == [
+        "8k~16k", "16k~32k", "32k~64k", "64k~128k", "128k~160k",
+    ]
+    votes = evidence["properties"]["votes"]
+    assert all(item["additionalProperties"] is False for item in (turn, salient, gap, evidence, votes))
+    assert turn["properties"]["dialogue"] == {"type": "string", "minLength": 1}
+    assert salient["properties"]["sentences"]["items"] == {"type": "string", "minLength": 1}
+    assert gap["properties"]["gap_reason"] == {"type": "string", "minLength": 1}
+    assert evidence["properties"]["sentence"] == {"type": "string", "minLength": 1}
+    assert evidence["properties"]["source_id"]["pattern"] == r"^T(0|[1-9]\d*)-S([1-9]\d*)$"

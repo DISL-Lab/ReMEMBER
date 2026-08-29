@@ -85,7 +85,13 @@ def ensemble_salient_votes(
                 continue
             types = sentence_votes[coordinates[0]]
             gap_type = majority_gap_type(types)
-            accepted.append({"gap_idx": len(accepted), "target_sentence_numbers": list(coordinates), "gap_type": gap_type})
+            vote_count = min(len(sentence_votes[coordinate]) for coordinate in coordinates)
+            accepted.append({
+                "gap_idx": len(accepted),
+                "target_sentence_numbers": list(coordinates),
+                "gap_type": gap_type,
+                "vote_count": vote_count,
+            })
         output.append({"schema_version": "1.0", "window_id": window_id, "gaps": accepted})
     return output
 

@@ -221,7 +221,7 @@ def test_ensembles_apply_paper_thresholds_and_final_votes_are_text_free():
         for name, gap_type in (("gemma", "A"), ("GLM", "A"), ("Qwen", "C"))
     }
     assert ensemble_salient_votes(salient_by_model)[0]["gaps"] == [
-        {"gap_idx": 0, "target_sentence_numbers": [0], "gap_type": "A"}
+        {"gap_idx": 0, "target_sentence_numbers": [0], "gap_type": "A", "vote_count": 3}
     ]
 
     chunks_by_model = {
@@ -268,9 +268,11 @@ def test_salient_ensemble_votes_by_sentence_then_unions_surviving_groups():
         ]}],
     }
 
-    assert [gap["target_sentence_numbers"] for gap in ensemble_salient_votes(rows)[0]["gaps"]] == [
+    result = ensemble_salient_votes(rows)
+    assert [gap["target_sentence_numbers"] for gap in result[0]["gaps"]] == [
         [1], [1, 2], [2]
     ]
+    assert result[0]["gaps"][0]["vote_count"] == 3
 
 
 def test_salient_ensemble_rejects_duplicate_sentence_vote_within_one_model():
