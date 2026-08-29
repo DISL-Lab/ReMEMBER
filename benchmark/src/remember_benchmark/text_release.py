@@ -32,6 +32,7 @@ WINDOW_ID_PATTERN = re.compile(r"[ELR]_U\d{4,}")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 SHARDING_POLICY = "balanced-contiguous-v1"
 DATASET_NAME = "remember_900"
+APPROVED_CONSTRUCTIONS = frozenset({"canonical-source-join", "pipeline-derived"})
 
 PROVENANCE = {
     "construction": "canonical-source-join",
@@ -623,6 +624,27 @@ def _shard_name(index: int, shard_count: int) -> str:
     return f"{DATASET_NAME}-{index:05d}-of-{shard_count:05d}.jsonl.gz"
 
 
+def _require_safe_name(value: Any, location: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or re.match(r"^[A-Za-z]:", value) is not None
+    ):
+        raise ValueError(f"invalid {location} name")
+    return value
+
+
+def _require_approved_construction(value: Any) -> str:
+    if not isinstance(value, str) or value not in APPROVED_CONSTRUCTIONS:
+        raise ValueError(
+            "provenance construction must be an approved construction identifier"
+        )
+    return value
+
+
 def export_benchmark(
     source_path: Path,
     rcv_path: Path,
@@ -638,8 +660,12 @@ def export_benchmark(
     """Build validated records and publish schema, shards, then manifest."""
     if type(shard_count) is not int or shard_count <= 0:
         raise ValueError("shard_count must be positive")
-    if not isinstance(construction, str) or not construction:
-        raise ValueError("construction must be a non-empty string")
+    _require_approved_construction(construction)
+    source_names = {
+        "windows": _require_safe_name(Path(source_path).name, "windows source"),
+        "rcv": _require_safe_name(Path(rcv_path).name, "rcv source"),
+        "salient": _require_safe_name(Path(salient_path).name, "salient source"),
+    }
     benchmark_dir = Path(benchmark_dir)
     if benchmark_dir.exists() and any(benchmark_dir.iterdir()):
         raise ValueError(f"benchmark directory must be empty: {benchmark_dir}")
@@ -657,6 +683,12 @@ def export_benchmark(
         expected_counts=expected_counts,
         expected_salient_count=expected_salient_count,
     )
+    if (
+        construction == "canonical-source-join"
+        and len(rows) == 900
+        and shard_count != BENCHMARK_SHARD_COUNT
+    ):
+        raise ValueError("canonical 900-row export requires 10 shards of 90 rows")
 
     benchmark_dir.mkdir(parents=True, exist_ok=True)
     schema_path = benchmark_dir / "schema.json"
@@ -683,9 +715,9 @@ def export_benchmark(
             "split": {"path": "../splits/main_900.txt", "sha256": _sha256(Path(split_path))},
         },
         "sources": {
-            "windows": {"name": Path(source_path).name, "sha256": _sha256(Path(source_path))},
-            "rcv": {"name": Path(rcv_path).name, "sha256": _sha256(Path(rcv_path))},
-            "salient": {"name": Path(salient_path).name, "sha256": _sha256(Path(salient_path))},
+            "windows": {"name": source_names["windows"], "sha256": _sha256(Path(source_path))},
+            "rcv": {"name": source_names["rcv"], "sha256": _sha256(Path(rcv_path))},
+            "salient": {"name": source_names["salient"], "sha256": _sha256(Path(salient_path))},
         },
         "provenance": provenance,
         "coordinate_system": dict(COORDINATE_SYSTEM),
@@ -736,6 +768,18 @@ def _validated_manifest(benchmark_dir: Path) -> dict[str, Any]:
     if manifest["dataset"] != DATASET_NAME:
         raise ValueError("invalid manifest dataset")
 
+    provenance = manifest["provenance"]
+    construction = _require_approved_construction(
+        provenance.get("construction") if isinstance(provenance, dict) else None
+    )
+    approved_provenance = []
+    for approved_construction in APPROVED_CONSTRUCTIONS:
+        candidate = dict(PROVENANCE)
+        candidate["construction"] = approved_construction
+        approved_provenance.append(candidate)
+    if provenance not in approved_provenance:
+        raise ValueError("invalid manifest provenance")
+
     sharding = _require_exact_keys(manifest["sharding"], {"count", "policy"}, "sharding")
     shard_count = sharding["count"]
     if type(shard_count) is not int or shard_count <= 0 or sharding["policy"] != SHARDING_POLICY:
@@ -749,6 +793,12 @@ def _validated_manifest(benchmark_dir: Path) -> dict[str, Any]:
     for name in ("windows", "gaps", "evidence", "salient_utterances"):
         if type(counts[name]) is not int or counts[name] < 0:
             raise ValueError(f"invalid manifest {name} count")
+    if (
+        construction == "canonical-source-join"
+        and counts["windows"] == 900
+        and shard_count != BENCHMARK_SHARD_COUNT
+    ):
+        raise ValueError("canonical 900-row manifest requires 10 shards of 90 rows")
     expected_sizes = _balanced_sizes(counts["windows"], shard_count)
     for index, item in enumerate(manifest["shards"]):
         item = _require_exact_keys(item, {"path", "rows", "sha256"}, f"shard {index}")
@@ -768,21 +818,9 @@ def _validated_manifest(benchmark_dir: Path) -> dict[str, Any]:
     sources = _require_exact_keys(manifest["sources"], {"windows", "rcv", "salient"}, "sources")
     for name, raw_source in sources.items():
         source = _require_exact_keys(raw_source, {"name", "sha256"}, f"{name} source")
-        if (
-            not isinstance(source["name"], str)
-            or not source["name"]
-            or Path(source["name"]).name != source["name"]
-        ):
-            raise ValueError(f"invalid {name} source name")
+        _require_safe_name(source["name"], f"{name} source")
         _require_sha256(source["sha256"], f"{name} source")
 
-    expected_provenance = dict(PROVENANCE)
-    construction = manifest["provenance"].get("construction") \
-        if isinstance(manifest["provenance"], dict) else None
-    if isinstance(construction, str) and construction:
-        expected_provenance["construction"] = construction
-    if manifest["provenance"] != expected_provenance:
-        raise ValueError("invalid manifest provenance")
     if manifest["coordinate_system"] != COORDINATE_SYSTEM:
         raise ValueError("invalid manifest coordinate system")
     if manifest["authorization"] != AUTHORIZATION:
@@ -851,7 +889,9 @@ def validate_benchmark_directory(
         try:
             shard_rows = list(iter_jsonl_gzip(shard_path))
         except (EOFError, OSError, ValueError) as error:
-            raise ValueError(f"invalid gzip-compressed shard: {item['path']}") from error
+            raise ValueError(
+                f"invalid gzip-compressed shard {item['path']}: {error}"
+            ) from error
         rows.extend(shard_rows)
         observed_sizes.append(len(shard_rows))
     reported_sizes = [item["rows"] for item in manifest["shards"]]
@@ -871,29 +911,49 @@ def validate_benchmark_directory(
 
 def _publish_staged_directory(staged: Path, target: Path) -> None:
     backup = target.parent / f".{target.name}.backup-{uuid.uuid4().hex}"
+    failed = target.parent / f".{target.name}.failed-{uuid.uuid4().hex}"
     moved_old = False
+    published_new = False
     try:
         if target.exists():
             os.replace(target, backup)
-            fsync_parent_directory(target)
             moved_old = True
+            try:
+                fsync_parent_directory(target)
+            except BaseException:
+                os.replace(backup, target)
+                moved_old = False
+                fsync_parent_directory(target)
+                raise
         try:
             os.replace(staged, target)
+            published_new = True
             fsync_parent_directory(target)
         except BaseException:
-            if moved_old and backup.exists() and not target.exists():
+            if published_new and target.exists():
+                os.replace(target, failed)
+                published_new = False
+            if moved_old and backup.exists():
                 os.replace(backup, target)
-                fsync_parent_directory(target)
                 moved_old = False
+                fsync_parent_directory(target)
+            if failed.exists():
+                shutil.rmtree(failed)
+                fsync_parent_directory(target)
             raise
         if moved_old:
             shutil.rmtree(backup)
+            moved_old = False
             fsync_parent_directory(target)
     finally:
         if staged.exists():
             shutil.rmtree(staged)
         if moved_old and backup.exists() and not target.exists():
             os.replace(backup, target)
+            moved_old = False
+            fsync_parent_directory(target)
+        if failed.exists() and target.exists():
+            shutil.rmtree(failed)
             fsync_parent_directory(target)
 
 

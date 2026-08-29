@@ -73,6 +73,10 @@ def iter_jsonl_gzip(path: Path) -> Iterator[dict[str, Any]]:
                 raise ValueError(f"invalid JSON at {path}:{line_number}") from error
             if not isinstance(row, dict):
                 raise ValueError(f"JSONL row is not an object at {path}:{line_number}")
+            if not raw_line.endswith(b"\n"):
+                raise ValueError(
+                    f"JSONL record lacks trailing newline at {path}:{line_number}"
+                )
             yield row
 
 

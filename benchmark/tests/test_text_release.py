@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import remember_benchmark.text_release as text_release
 from remember_benchmark.io import atomic_write_jsonl, atomic_write_jsonl_gzip, iter_jsonl_gzip
 from remember_benchmark.text_release import (
     BENCHMARK_SCHEMA_VERSION,
@@ -358,6 +359,23 @@ def test_iter_jsonl_gzip_rejects_invalid_physical_lines(tmp_path, payload, messa
         list(iter_jsonl_gzip(path))
 
 
+def write_raw_gzip(path: Path, payload: bytes):
+    with path.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as handle:
+            handle.write(payload)
+
+
+def test_iter_jsonl_gzip_requires_final_record_newline_but_allows_empty_shard(tmp_path):
+    missing_newline = tmp_path / "missing-newline.jsonl.gz"
+    empty = tmp_path / "empty.jsonl.gz"
+    write_raw_gzip(missing_newline, b'{"ok":1}')
+    write_raw_gzip(empty, b"")
+
+    with pytest.raises(ValueError, match=r"trailing newline.*missing-newline.jsonl.gz:1"):
+        list(iter_jsonl_gzip(missing_newline))
+    assert list(iter_jsonl_gzip(empty)) == []
+
+
 def write_export_inputs(root: Path, count: int = 1):
     source_path = root / "inputs/windows.jsonl"
     rcv_path = root / "inputs/rcv.jsonl"
@@ -434,11 +452,42 @@ def test_export_benchmark_writes_ten_balanced_canonical_shards_and_manifest(tmp_
 def test_export_benchmark_balances_small_exports_with_only_trailing_empty_shards(tmp_path):
     source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
 
-    manifest = export_benchmark(source, rcv, salient, split, benchmark_dir)
+    manifest = export_benchmark(
+        source, rcv, salient, split, benchmark_dir, construction="pipeline-derived"
+    )
 
     assert [item["rows"] for item in manifest["shards"]] == [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assert manifest["provenance"]["construction"] == "pipeline-derived"
     assert [row["window_id"] for item in manifest["shards"]
             for row in iter_jsonl_gzip(benchmark_dir / item["path"])] == ["E_U0000"]
+
+
+def test_canonical_900_export_requires_exactly_ten_ninety_row_shards(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path, count=900)
+
+    with pytest.raises(ValueError, match="canonical 900-row export requires 10 shards"):
+        export_benchmark(
+            source, rcv, salient, split, benchmark_dir,
+            shard_count=9, construction="canonical-source-join",
+        )
+
+    assert not benchmark_dir.exists()
+
+
+def test_validation_rejects_canonical_provenance_on_variable_900_row_layout(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path, count=900)
+    export_benchmark(
+        source, rcv, salient, split, benchmark_dir,
+        shard_count=9, construction="pipeline-derived",
+    )
+    manifest = read_manifest(benchmark_dir)
+    manifest["provenance"]["construction"] = "canonical-source-join"
+    write_manifest(benchmark_dir, manifest)
+
+    with pytest.raises(ValueError, match="canonical 900-row manifest requires 10 shards"):
+        validate_benchmark_directory(
+            benchmark_dir, [f"E_U{index:04d}" for index in range(900)]
+        )
 
 
 def test_export_benchmark_rejects_nonpositive_shard_count_before_writing(tmp_path):
@@ -495,6 +544,21 @@ def test_validate_benchmark_directory_hashes_before_rejecting_corrupt_gzip(tmp_p
         validate_benchmark_directory(benchmark_dir, ["E_U0000"])
 
 
+def test_validate_benchmark_directory_rejects_rehashed_shard_without_final_newline(tmp_path):
+    _, _, _, _, benchmark_dir = exported_fixture(tmp_path)
+    manifest = read_manifest(benchmark_dir)
+    shard = benchmark_dir / manifest["shards"][0]["path"]
+    with gzip.open(shard, "rb") as handle:
+        payload = handle.read()
+    assert payload.endswith(b"\n")
+    write_raw_gzip(shard, payload[:-1])
+    manifest["shards"][0]["sha256"] = sha256(shard)
+    write_manifest(benchmark_dir, manifest)
+
+    with pytest.raises(ValueError, match=r"trailing newline.*:1"):
+        validate_benchmark_directory(benchmark_dir, ["E_U0000"])
+
+
 def test_validate_benchmark_directory_rejects_changed_split_hash(tmp_path):
     _, _, _, split, benchmark_dir = exported_fixture(tmp_path)
     split.write_text("E_U0000\nE_U0001\n", encoding="utf-8")
@@ -511,6 +575,90 @@ def test_validate_benchmark_directory_compares_supplied_source_hashes(tmp_path):
         validate_benchmark_directory(
             benchmark_dir, ["E_U0000"], expected_source_hashes=expected
         )
+
+
+@pytest.mark.parametrize("construction", [
+    "standalone-canonical", "unapproved", "/tmp/pipeline-derived", "../pipeline-derived",
+    ["pipeline-derived"],
+])
+def test_export_benchmark_rejects_unapproved_or_pathlike_construction(tmp_path, construction):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+
+    with pytest.raises(ValueError, match="approved construction"):
+        export_benchmark(
+            source, rcv, salient, split, benchmark_dir, construction=construction
+        )
+
+    assert not benchmark_dir.exists()
+
+
+@pytest.mark.parametrize("construction", [
+    "unapproved", "/tmp/private", "../pipeline-derived", ["pipeline-derived"],
+])
+def test_validation_rejects_manifest_defined_construction_expectations(tmp_path, construction):
+    _, _, _, _, benchmark_dir = exported_fixture(tmp_path)
+    manifest = read_manifest(benchmark_dir)
+    manifest["provenance"]["construction"] = construction
+    write_manifest(benchmark_dir, manifest)
+
+    with pytest.raises(ValueError, match="approved construction"):
+        validate_benchmark_directory(benchmark_dir, ["E_U0000"])
+
+
+@pytest.mark.parametrize("source_name", [
+    "/tmp/windows.jsonl", "../windows.jsonl", r"C:\private\windows.jsonl",
+    r"..\windows.jsonl",
+])
+def test_validation_rejects_absolute_or_pathlike_source_names(tmp_path, source_name):
+    _, _, _, _, benchmark_dir = exported_fixture(tmp_path)
+    manifest = read_manifest(benchmark_dir)
+    manifest["sources"]["windows"]["name"] = source_name
+    write_manifest(benchmark_dir, manifest)
+
+    with pytest.raises(ValueError, match="invalid windows source name"):
+        validate_benchmark_directory(benchmark_dir, ["E_U0000"])
+
+
+def test_export_rejects_pathlike_source_provenance_name(tmp_path):
+    source, rcv, salient, split, benchmark_dir = write_export_inputs(tmp_path)
+    pathlike_source = source.with_name(r"C:\private\windows.jsonl")
+    source.rename(pathlike_source)
+
+    with pytest.raises(ValueError, match="invalid windows source name"):
+        export_benchmark(pathlike_source, rcv, salient, split, benchmark_dir)
+
+    assert not benchmark_dir.exists()
+
+
+@pytest.mark.parametrize("fail_at", [1, 2])
+def test_publish_staged_directory_restores_old_target_after_fsync_failure(
+    tmp_path, monkeypatch, fail_at
+):
+    target = tmp_path / "public"
+    staged = tmp_path / "staged"
+    target.mkdir()
+    staged.mkdir()
+    (target / "inventory.json").write_text("old inventory", encoding="utf-8")
+    (staged / "inventory.json").write_text("new inventory", encoding="utf-8")
+    real_fsync_parent = text_release.fsync_parent_directory
+    calls = 0
+
+    def fail_selected_boundary(path):
+        nonlocal calls
+        calls += 1
+        if calls == fail_at:
+            raise OSError(f"injected fsync failure {fail_at}")
+        return real_fsync_parent(path)
+
+    monkeypatch.setattr(text_release, "fsync_parent_directory", fail_selected_boundary)
+
+    with pytest.raises(OSError, match=f"injected fsync failure {fail_at}"):
+        text_release._publish_staged_directory(staged, target)
+
+    assert (target / "inventory.json").read_text(encoding="utf-8") == "old inventory"
+    assert not staged.exists()
+    assert list(tmp_path.glob(".public.backup-*")) == []
+    assert list(tmp_path.glob(".public.failed-*")) == []
 
 
 def cli_command(source, rcv, salient, split, benchmark_dir, *extra):
