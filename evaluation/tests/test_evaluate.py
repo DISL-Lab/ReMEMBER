@@ -586,6 +586,20 @@ def test_conciseness_counts_unique_positive_lines_across_mkf_and_wkf():
     assert scores["conciseness"]["micro"]["denominator"] == 4
 
 
+def test_per_window_carries_length_bucket_from_tok_end():
+    """E_U0001 (tok_end=9024) and L_U0002 (tok_end=17024) both fall under the
+    32K edge, matching analysis_v3's `length_group_for_window`."""
+    benchmark = ev.load_benchmark(BENCHMARK)
+    predictions = ev.load_predictions(PREDICTIONS, benchmark.ordered_ids, allow_partial=True)
+    per_window, _ = ev.evaluate_predictions(
+        list(benchmark.rows), predictions, ev.load_prompts(PROMPT_DIR), ev.FakeProvider(),
+        metrics=["mr"], metric_max_tokens=ev.METRIC_MAX_TOKENS, batch_size=8,
+    )
+    assert {row["window_id"]: row["length_bucket"] for row in per_window} == {
+        "E_U0001": "8K-32K", "L_U0002": "8K-32K",
+    }
+
+
 def test_mr_gated_mkf_joins_strictly_on_window_and_gap_idx():
     per_window = [_window(
         window_id="A",
@@ -616,6 +630,41 @@ def test_metric_dependency_closure():
     assert ev.expand_metric_dependencies(["conciseness"]) == ["mkf", "wkf"]
     assert ev.expand_metric_dependencies(["mr_gated_mkf"]) == ["mr", "mkf"]
     assert ev.expand_metric_dependencies(list(ev.REPORTED_METRICS)) == list(ev.INFERENCE_METRICS)
+
+
+def test_length_bucket_matches_analysis_v3_edges():
+    """analysis_v3's `length_label_for_tokens`: strict `tok < edge * 1000`
+    against LENGTH_BIN_EDGES_K = (32, 64), labels 8K-32K/32K-64K/64K-160K;
+    a boundary token count belongs to the bucket it reaches, not the one it
+    leaves. Missing or non-numeric tok_end is unknown (None), matching
+    analysis_v3's "unknown" for a window absent from TOK_LEN."""
+    assert ev.length_bucket(0) == "8K-32K"
+    assert ev.length_bucket(31999) == "8K-32K"
+    assert ev.length_bucket(32000) == "32K-64K"
+    assert ev.length_bucket(63999) == "32K-64K"
+    assert ev.length_bucket(64000) == "64K-160K"
+    assert ev.length_bucket(200000) == "64K-160K"
+    assert ev.length_bucket(None) is None
+    assert ev.length_bucket("32000") is None
+    assert ev.length_bucket(True) is None
+
+
+def test_score_run_breaks_metrics_down_by_length_bucket():
+    per_window = [
+        _window(window_id="A", length_bucket="8K-32K",
+                mr={"numerator": 1, "denominator": 1, "parse_failure": False, "decisions": {}}),
+        _window(window_id="B", length_bucket="64K-160K",
+                mr={"numerator": 0, "denominator": 1, "parse_failure": False, "decisions": {}}),
+        _window(window_id="C", length_bucket=None,
+                mr={"numerator": 1, "denominator": 1, "parse_failure": False, "decisions": {}}),
+    ]
+    scores = ev.score_run(per_window)
+    assert scores["mr"]["micro"]["denominator"] == 3
+    by_bucket = scores["mr"]["by_length_bucket"]
+    assert set(by_bucket) == {"8K-32K", "64K-160K"}
+    assert by_bucket["8K-32K"]["micro"]["value"] == pytest.approx(1.0)
+    assert by_bucket["64K-160K"]["micro"]["value"] == pytest.approx(0.0)
+    assert scores["metadata"]["length_buckets"] == list(ev.LENGTH_BUCKETS)
 
 
 # ------------------------------------------------------------- CLI validation
@@ -685,7 +734,7 @@ def test_end_to_end_produces_exactly_the_five_artifacts(tmp_path):
     for metric in ev.REPORTED_METRICS:
         assert metric in completed.stdout
     assert (output / "scores.csv").read_text().startswith(
-        "metric,aggregation,value,numerator,denominator,")
+        "metric,length_bucket,aggregation,value,numerator,denominator,")
     per_window = [json.loads(line) for line in
                   (output / "per_window.jsonl").read_text().splitlines() if line.strip()]
     assert [row["window_id"] for row in per_window] == ["E_U0001", "L_U0002"]

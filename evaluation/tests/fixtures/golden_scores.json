@@ -12,6 +12,11 @@
       "coreference error",
       "linking error",
       "other error"
+    ],
+    "length_buckets": [
+      "8K-32K",
+      "32K-64K",
+      "64K-160K"
     ]
   },
   "mr": {
@@ -32,6 +37,28 @@
       "parse_failure_count": 0,
       "windows_with_items": 2,
       "windows_without_items": 0
+    },
+    "by_length_bucket": {
+      "8K-32K": {
+        "micro": {
+          "numerator": 2,
+          "denominator": 3,
+          "value": 0.6666666666666666,
+          "aggregation": "micro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "macro": {
+          "numerator": 1.5,
+          "denominator": 2,
+          "value": 0.75,
+          "aggregation": "macro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        }
+      }
     }
   },
   "mkf": {
@@ -52,6 +79,28 @@
       "parse_failure_count": 0,
       "windows_with_items": 2,
       "windows_without_items": 0
+    },
+    "by_length_bucket": {
+      "8K-32K": {
+        "micro": {
+          "numerator": 1.0,
+          "denominator": 3,
+          "value": 0.3333333333333333,
+          "aggregation": "micro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "macro": {
+          "numerator": 1.0,
+          "denominator": 2,
+          "value": 0.5,
+          "aggregation": "macro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        }
+      }
     }
   },
   "wkf": {
@@ -72,6 +121,28 @@
       "parse_failure_count": 0,
       "windows_with_items": 2,
       "windows_without_items": 0
+    },
+    "by_length_bucket": {
+      "8K-32K": {
+        "micro": {
+          "numerator": 1.0,
+          "denominator": 3,
+          "value": 0.3333333333333333,
+          "aggregation": "micro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "macro": {
+          "numerator": 1.0,
+          "denominator": 2,
+          "value": 0.5,
+          "aggregation": "macro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        }
+      }
     }
   },
   "conciseness": {
@@ -92,6 +163,28 @@
       "parse_failure_count": 0,
       "windows_with_items": 2,
       "windows_without_items": 0
+    },
+    "by_length_bucket": {
+      "8K-32K": {
+        "micro": {
+          "numerator": 1,
+          "denominator": 4,
+          "value": 0.25,
+          "aggregation": "micro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "macro": {
+          "numerator": 1.0,
+          "denominator": 2,
+          "value": 0.5,
+          "aggregation": "macro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        }
+      }
     }
   },
   "mr_gated_mkf": {
@@ -113,7 +206,30 @@
       "windows_with_items": 2,
       "windows_without_items": 0
     },
-    "diagnostic": true
+    "diagnostic": true,
+    "by_length_bucket": {
+      "8K-32K": {
+        "micro": {
+          "numerator": 1.0,
+          "denominator": 3,
+          "value": 0.3333333333333333,
+          "aggregation": "micro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "macro": {
+          "numerator": 1.0,
+          "denominator": 2,
+          "value": 0.5,
+          "aggregation": "macro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "diagnostic": true
+      }
+    }
   },
   "factuality": {
     "micro": {
@@ -148,6 +264,43 @@
     "parse_failures_by_phase": {
       "atomic": 0,
       "checker": 0
+    },
+    "by_length_bucket": {
+      "8K-32K": {
+        "micro": {
+          "numerator": 3,
+          "denominator": 4,
+          "value": 0.75,
+          "aggregation": "micro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "macro": {
+          "numerator": 1.6666666666666665,
+          "denominator": 2,
+          "value": 0.8333333333333333,
+          "aggregation": "macro",
+          "parse_failure_count": 0,
+          "windows_with_items": 2,
+          "windows_without_items": 0
+        },
+        "categories": {
+          "no error": 3,
+          "out-of-context error": 1,
+          "entity error": 0,
+          "predicate error": 0,
+          "circumstantial error": 0,
+          "grammatical error": 0,
+          "coreference error": 0,
+          "linking error": 0,
+          "other error": 0
+        },
+        "parse_failures_by_phase": {
+          "atomic": 0,
+          "checker": 0
+        }
+      }
     }
   }
 }

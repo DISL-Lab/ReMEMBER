@@ -128,6 +128,13 @@ the evaluator falls back to one fact per summary sentence and still scores them.
 only when all four are. A custom prompt directory stays usable — it is just
 visibly not the paper preset.
 
+Each metric block in `scores.json`/`scores.csv` also carries `by_length_bucket`:
+the same micro/macro numbers restricted to windows in one of the paper's three
+dialogue-length groups (`8K-32K`, `32K-64K`, `64K-160K`), bucketed on each
+window's `tok_end` — this is analysis_v3's `LENGTH_BIN_EDGES_K = (32, 64)`
+grouping, not the dataset's finer 5-way `range` sampling stratum. Each
+`per_window.jsonl` row carries the same bucket under `length_bucket`.
+
 ## Resume and overwrite
 
 An interrupted run leaves a recoverable `.<output-dir>.in_progress` directory
