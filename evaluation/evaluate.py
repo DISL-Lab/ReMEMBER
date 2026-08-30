@@ -19,6 +19,7 @@ import gzip
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -681,21 +682,26 @@ def normalize_mr(
     items: Sequence[Mapping[str, Any]] | None,
     expected_gap_ids: Sequence[str],
 ) -> list[dict[str, Any]] | None:
+    """Per-gap fault tolerance: an unrecognized or duplicate `gap_id` is
+    ignored and a `gap_id` the judge never returned defaults to decision=0,
+    matching memory_recall.py's `main()` (UNCOVERED-fill on a per-gap basis,
+    not a whole-window parse failure)."""
     if items is None:
         return None
     expected = list(expected_gap_ids)
-    by_id: dict[str, dict[str, Any]] = {}
+    by_id: dict[str, int] = {}
     for item in items:
         gap_id = item.get("gap_id")
         if not isinstance(gap_id, str) or gap_id not in expected or gap_id in by_id:
-            return None
-        by_id[gap_id] = {"gap_id": gap_id, "decision": 1 if _mr_positive(item.get("decision")) else 0}
-    if set(by_id) != set(expected):
-        return None
-    return [by_id[gap_id] for gap_id in expected]
+            continue
+        by_id[gap_id] = 1 if _mr_positive(item.get("decision")) else 0
+    return [{"gap_id": gap_id, "decision": by_id.get(gap_id, 0)} for gap_id in expected]
 
 
 def _coverage_score(value: Any) -> float | None:
+    """Any finite number is a usable score, matching analysis_v3's
+    `numeric_score` — the MKF/WKF rubric asks for 0/1, but a judge that drifts
+    (e.g. 0.5) still contributes a real value rather than invalidating itself."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -707,7 +713,7 @@ def _coverage_score(value: Any) -> float | None:
             return None
     else:
         return None
-    if number not in (0.0, 1.0):
+    if not math.isfinite(number):
         return None
     return number
 
@@ -736,6 +742,13 @@ def normalize_coverage(
     id_field: str,
     max_line: int | None = None,
 ) -> list[dict[str, Any]] | None:
+    """Per-item fault tolerance: an item with an unrecognized/duplicate id, an
+    unusable score, or an unusable line-number citation is dropped rather than
+    invalidating the whole window. Matches analysis_v3's `coerce_scores`, which
+    sums only over items with a finite score and never zero-fills a window
+    that has at least one valid item — a window is excluded only when it has
+    none (`skipped_empty_windows`). The returned list may be shorter than
+    `expected_ids`; callers must key results by id, not position."""
     if items is None:
         return None
     expected = list(expected_ids)
@@ -743,22 +756,23 @@ def normalize_coverage(
     for item in items:
         item_id = item.get(id_field)
         if not isinstance(item_id, str) or item_id not in expected or item_id in by_id:
-            return None
+            continue
         score = _coverage_score(item.get("score"))
         lines = _line_numbers(item.get("line_number"), max_line)
         if score is None or lines is None:
-            return None
+            continue
         by_id[item_id] = {id_field: item_id, "score": score, "line_number": lines}
-    if set(by_id) != set(expected):
-        return None
-    return [by_id[item_id] for item_id in expected]
+    return [by_id[item_id] for item_id in expected if item_id in by_id]
 
 
 def normalize_atomic_facts(
     parsed: Sequence[Mapping[str, Any]] | None,
     summary_sentences: Sequence[str],
 ) -> list[dict[str, Any]]:
-    """Fall back to one fact per summary sentence, as the canonical evaluator does."""
+    """Fall back to one fact per summary sentence, as the canonical evaluator
+    does. A malformed item is skipped, not treated as invalidating the whole
+    array — matching factuality_eval.py's `normalize_atomic_facts`, which
+    keeps every well-formed item and only falls back when none survive."""
     fallback = [
         {"sentence_num": f"S{index}", "fact_id": f"S{index}-F0", "text": sentence}
         for index, sentence in enumerate(summary_sentences)
@@ -766,24 +780,22 @@ def normalize_atomic_facts(
     if not parsed:
         return fallback
     facts: list[dict[str, Any]] = []
+    seen_fact_ids: set[str] = set()
     for item in parsed:
         sentence_num = item.get("sentence_num")
         fact_id = item.get("fact_id")
         text = item.get("fact") if isinstance(item.get("fact"), str) else item.get("text")
         if not isinstance(sentence_num, str) or not re.fullmatch(r"S\d+", sentence_num):
-            return fallback
+            continue
         if not isinstance(text, str) or not text.strip():
-            return fallback
+            continue
         if int(sentence_num[1:]) >= len(summary_sentences):
-            return fallback
-        if not isinstance(fact_id, str) or not fact_id.strip():
+            continue
+        if not isinstance(fact_id, str) or not fact_id.strip() or fact_id in seen_fact_ids:
             fact_id = f"{sentence_num}-F{len(facts)}"
+        seen_fact_ids.add(fact_id)
         facts.append({"sentence_num": sentence_num, "fact_id": fact_id, "text": text.strip()})
-    if not facts:
-        return fallback
-    if len({fact["fact_id"] for fact in facts}) != len(facts):
-        return fallback
-    return facts
+    return facts or fallback
 
 
 def normalize_category(value: Any) -> str:
@@ -798,30 +810,18 @@ def normalize_factuality(
     parsed: Sequence[Mapping[str, Any]] | None,
     facts: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Map each returned `sentence` echo onto exactly one ordered fact."""
-    if parsed is None:
-        return []
-    remaining = {index: fact["text"] for index, fact in enumerate(facts)}
-    assigned: dict[int, str] = {}
-    for item in parsed:
-        echo = item.get("sentence")
-        if not isinstance(echo, str):
-            return []
-        target = None
-        for index, text in remaining.items():
-            if text == echo.strip() or text == echo:
-                target = index
-                break
-        if target is None:
-            return []
-        del remaining[target]
-        assigned[target] = normalize_category(item.get("category"))
-    if len(assigned) != len(facts):
-        return []
-    return [
-        {"fact_id": facts[index]["fact_id"], "category": assigned[index]}
-        for index in range(len(facts))
-    ]
+    """Positionally align the judge's response to `facts`, padding/truncating
+    to len(facts) and defaulting an unusable slot to "other error" — matching
+    factuality_eval.py's checker alignment (`aligned = parsed_arr[:len(expected)]`,
+    padded with None, each slot run through `normalize_parsed_sentence`), which
+    never discards a whole window over one bad or non-verbatim item."""
+    aligned: list[Any] = list(parsed[: len(facts)]) if parsed else []
+    aligned += [None] * (len(facts) - len(aligned))
+    results = []
+    for fact, item in zip(facts, aligned):
+        category = normalize_category(item.get("category")) if isinstance(item, Mapping) else "other error"
+        results.append({"fact_id": fact["fact_id"], "category": category})
+    return results
 
 
 # ------------------------------------------------------------------- rendering
@@ -1424,7 +1424,7 @@ def evaluate_predictions(
         def checker_parser(request, text):
             raw = parse_factuality(text)
             judged = normalize_factuality(raw, request.payload["facts"])
-            return judged, bool(judged), len(judged)
+            return judged, raw is not None, len(judged)
 
         run(checker_requests, checker_parser, max_tokens=metric_max_tokens["factuality"])
 
@@ -1494,13 +1494,13 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference,
             gaps = row["gaps"]
             scores = {}
             if mkf_entry and mkf_entry["value"] is not None:
-                indices = mkf_entry["request"].payload["gap_indices"]
-                scores = {index: item["score"]
-                          for index, item in zip(indices, mkf_entry["value"])}
+                request = mkf_entry["request"]
+                id_to_index = dict(zip(request.expected_item_ids, request.payload["gap_indices"]))
+                scores = {id_to_index[item["gap_num"]]: item["score"] for item in mkf_entry["value"]}
             record["mkf"] = {
                 "numerator": sum(scores.values()),
-                "denominator": len(gaps),
-                "parse_failure": bool(gaps) and (mkf_entry is None or mkf_entry["value"] is None),
+                "denominator": len(scores),
+                "parse_failure": bool(gaps) and not scores,
                 "scores": {str(key): value for key, value in sorted(scores.items())},
             }
 
@@ -1510,8 +1510,8 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference,
             value = wkf_entry["value"] if wkf_entry else None
             record["wkf"] = {
                 "numerator": sum(item["score"] for item in value) if value else 0.0,
-                "denominator": len(items),
-                "parse_failure": bool(items) and value is None,
+                "denominator": len(value) if value else 0,
+                "parse_failure": bool(items) and not value,
             }
 
         if "conciseness" in requested:
@@ -1527,7 +1527,7 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference,
         if "mr_gated_mkf" in requested:
             mr_scores = record.get("mr", {}).get("decisions", {})
             mkf_scores = record.get("mkf", {}).get("scores", {})
-            gated = [mkf_scores.get(key, 0.0) for key, value in mr_scores.items() if value == 1]
+            gated = [value if mr_scores.get(key) == 1 else 0.0 for key, value in mkf_scores.items()]
             record["mr_gated_mkf"] = {
                 "numerator": sum(gated),
                 "denominator": len(gated),
@@ -1548,7 +1548,7 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference,
                 "denominator": len(facts),
                 "categories": categories,
                 "atomic_parse_failure": bool(atomic_entry) and not atomic_entry["parse_ok"],
-                "checker_parse_failure": bool(facts) and not judged,
+                "checker_parse_failure": bool(facts) and not (checker_entry and checker_entry["parse_ok"]),
             }
         per_window.append(record)
     return per_window

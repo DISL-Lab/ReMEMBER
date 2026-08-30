@@ -234,9 +234,19 @@ def test_summarize_uses_window_only_prompt_for_empty_memory():
 
 
 def test_summary_parser_accepts_plain_text_response():
-    generator = RecordingGenerator(["A concise plain-text summary."])
+    generator = RecordingGenerator(["A concise plain-text summary of the whole window."])
     empty = MemoryResult("", (), 0, "p", "l", 0, 0, 0)
 
     assert summarize(WINDOW, empty, generator, "{window} {memory}", "{window}") == (
-        "A concise plain-text summary."
+        "A concise plain-text summary of the whole window."
     )
+
+
+def test_summary_parser_rejects_short_plain_text_as_unusable():
+    """Canonical `parse_summary`'s raw-text fallback requires >=6 tokens, so a
+    short non-JSON response (e.g. a truncated or garbled generation) is
+    treated as unusable rather than accepted as a real summary."""
+    generator = RecordingGenerator(["Too short."])
+    empty = MemoryResult("", (), 0, "p", "l", 0, 0, 0)
+
+    assert summarize(WINDOW, empty, generator, "{window} {memory}", "{window}") == ""

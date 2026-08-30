@@ -228,13 +228,24 @@ def test_mr_strips_a_completed_think_block():
     ]
 
 
-@pytest.mark.parametrize("items", [
-    [{"gap_id": "gap_0", "decision": 1}, {"gap_id": "gap_0", "decision": 0}],   # duplicate
-    [{"gap_id": "gap_9", "decision": 1}],                                        # unexpected
-    [],                                                                           # missing
+@pytest.mark.parametrize("items,expected", [
+    ([{"gap_id": "gap_0", "decision": 1}, {"gap_id": "gap_0", "decision": 0}],   # duplicate: first wins
+     [{"gap_id": "gap_0", "decision": 1}, {"gap_id": "gap_1", "decision": 0}]),
+    ([{"gap_id": "gap_9", "decision": 1}],                                        # unexpected: ignored
+     [{"gap_id": "gap_0", "decision": 0}, {"gap_id": "gap_1", "decision": 0}]),
+    ([],                                                                           # missing: UNCOVERED-fill
+     [{"gap_id": "gap_0", "decision": 0}, {"gap_id": "gap_1", "decision": 0}]),
 ])
-def test_any_mr_item_defect_invalidates_the_whole_judgment(items):
-    assert ev.normalize_mr(items, ["gap_0", "gap_1"]) is None
+def test_mr_item_defects_are_tolerated_per_gap(items, expected):
+    """A duplicate/unexpected item, or a gap_id the judge never returned, is
+    handled per gap (defaulting to decision=0) rather than invalidating the
+    whole window — matching memory_recall.py's `main()`, which UNCOVERED-fills
+    only the affected gap and keeps every other gap's real decision."""
+    assert ev.normalize_mr(items, ["gap_0", "gap_1"]) == expected
+
+
+def test_mr_normalization_only_fails_on_total_parse_failure():
+    assert ev.normalize_mr(None, ["gap_0", "gap_1"]) is None
 
 
 def test_coverage_uses_the_last_balanced_array_and_no_comma_repair():
@@ -244,14 +255,34 @@ def test_coverage_uses_the_last_balanced_array_and_no_comma_repair():
     assert ev.parse_coverage('[{"utterance_num": "U0", "score": 1.0},]') is None
 
 
-def test_coverage_normalization_requires_exact_expected_ids():
+def test_coverage_normalization_drops_unmatched_items_per_item():
+    """analysis_v3's `coerce_scores` sums only over items with a finite score
+    and never zero-fills a window that has at least one valid item — a
+    missing, duplicate, unrecognized, or unparseable item is dropped, not a
+    whole-window failure."""
     items = [{"utterance_num": "U0", "score": 1.0, "line_number": ["S1"]}]
     assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num") == [
         {"utterance_num": "U0", "score": 1.0, "line_number": ["S1"]}
     ]
-    assert ev.normalize_coverage(items, ["U0", "U1"], id_field="utterance_num") is None
-    bad = [{"utterance_num": "U0", "score": 0.5, "line_number": []}]
-    assert ev.normalize_coverage(bad, ["U0"], id_field="utterance_num") is None
+    # U1 missing from the judge's response: that item is dropped, not the window.
+    assert ev.normalize_coverage(items, ["U0", "U1"], id_field="utterance_num") == [
+        {"utterance_num": "U0", "score": 1.0, "line_number": ["S1"]}
+    ]
+    # An unparseable score is dropped per item.
+    bad = [{"utterance_num": "U0", "score": "not-a-number", "line_number": []}]
+    assert ev.normalize_coverage(bad, ["U0"], id_field="utterance_num") == []
+    # Total parse failure (no array at all) is still None.
+    assert ev.normalize_coverage(None, ["U0"], id_field="utterance_num") is None
+
+
+def test_coverage_score_accepts_any_finite_value_not_only_binary():
+    """analysis_v3's `numeric_score` accepts any finite score, not only
+    {0.0, 1.0} — the rubric asks for binary output, but a drifting judge
+    (0.5) should still contribute a real value rather than being discarded."""
+    items = [{"utterance_num": "U0", "score": 0.5, "line_number": ["S1"]}]
+    assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num") == [
+        {"utterance_num": "U0", "score": 0.5, "line_number": ["S1"]}
+    ]
 
 
 def test_atomic_failure_falls_back_to_one_fact_per_sentence():
@@ -300,17 +331,36 @@ def test_factuality_category_order_is_fixed():
     )
 
 
-def test_factuality_maps_each_echo_onto_exactly_one_fact():
+def test_factuality_aligns_judge_items_positionally_to_facts():
+    """factuality_eval.py's checker aligns the judge's response to `facts` by
+    position (`aligned = parsed_arr[:len(expected)]`, padded with None), not
+    by matching the echoed sentence text — a rephrased echo must not drop the
+    item, and a short/long response is padded/truncated rather than
+    discarded."""
     facts = [{"fact_id": "S0-F0", "text": "A."}, {"fact_id": "S1-F0", "text": "B."}]
     assert ev.normalize_factuality(
-        [{"sentence": "B.", "category": "entity error"},
-         {"sentence": "A.", "category": "no error"}], facts,
+        [{"sentence": "A.", "category": "no error"},
+         {"sentence": "a rephrased echo, not verbatim", "category": "entity error"}], facts,
     ) == [{"fact_id": "S0-F0", "category": "no error"},
           {"fact_id": "S1-F0", "category": "entity error"}]
-    assert ev.normalize_factuality([{"sentence": "A.", "category": "no error"}], facts) == []
+    # Fewer items than facts: the missing slot defaults to "other error".
+    assert ev.normalize_factuality([{"sentence": "A.", "category": "no error"}], facts) == [
+        {"fact_id": "S0-F0", "category": "no error"},
+        {"fact_id": "S1-F0", "category": "other error"},
+    ]
+    # More items than facts: truncated to len(facts).
     assert ev.normalize_factuality(
         [{"sentence": "A.", "category": "no error"},
-         {"sentence": "A.", "category": "no error"}], facts) == []
+         {"sentence": "B.", "category": "no error"},
+         {"sentence": "extra", "category": "no error"}], facts) == [
+        {"fact_id": "S0-F0", "category": "no error"},
+        {"fact_id": "S1-F0", "category": "no error"},
+    ]
+    # No parse at all: every fact defaults to "other error", never discarded.
+    assert ev.normalize_factuality(None, facts) == [
+        {"fact_id": "S0-F0", "category": "other error"},
+        {"fact_id": "S1-F0", "category": "other error"},
+    ]
 
 
 # ------------------------------------------------------------------ rendering
@@ -841,12 +891,12 @@ def test_a_prediction_cannot_inject_a_placeholder_or_unescape_its_own_braces():
     assert "{{db}}" in rendered
 
 
-def test_out_of_range_line_citations_invalidate_the_coverage_judgment():
+def test_out_of_range_line_citations_drop_just_that_item():
     items = [{"utterance_num": "U0", "score": 1.0, "line_number": ["S1", "S99"]}]
-    assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num", max_line=2) is None
-    assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num", max_line=99) is not None
+    assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num", max_line=2) == []
+    assert ev.normalize_coverage(items, ["U0"], id_field="utterance_num", max_line=99) == items
     zero = [{"utterance_num": "U0", "score": 1.0, "line_number": ["S0"]}]
-    assert ev.normalize_coverage(zero, ["U0"], id_field="utterance_num", max_line=3) is None
+    assert ev.normalize_coverage(zero, ["U0"], id_field="utterance_num", max_line=3) == []
 
 
 def test_the_fake_provider_refuses_an_ambiguous_prompt():

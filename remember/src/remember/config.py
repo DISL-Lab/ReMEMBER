@@ -27,9 +27,9 @@ class RememberConfig:
     top_k: int = 8
     rrf_k: int = 60
     gap_temperature: float = 0.0
-    gap_max_tokens: int = 768
+    gap_max_tokens: int = 2048
     summary_temperature: float = 0.7
-    summary_max_tokens: int = 768
+    summary_max_tokens: int = 1024
     token_encoding: str = "cl100k_base"
     dense_query_prefix: str = DENSE_QUERY_PREFIX
 

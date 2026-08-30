@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 
 from .facet_turn import MemoryResult
 from .inference import TextGenerator
 from .schemas import Window
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_+./:-]*")
+_FENCE_RE = re.compile(r"```(?:json)?\s*|```\s*", re.IGNORECASE)
 
 
 def render_window(window: Window, *, indexed: bool = False) -> str:
@@ -19,17 +23,54 @@ def render_window(window: Window, *, indexed: bool = False) -> str:
 
 
 def _parse_summary(raw_output: str) -> str:
-    cleaned = re.sub(r"```(?:json)?\s*|```\s*", "", raw_output or "", flags=re.IGNORECASE).strip()
+    """Five-tier lenient extraction, matching `predicted_evidence_need_memory.py`'s
+    canonical `parse_summary`: whole-object JSON, embedded-object JSON, Python
+    literal, a quoted-string regex, an escaped-quote-continuation regex, and
+    finally a raw-text fallback gated on a minimum token count so short
+    garbage isn't accepted as a summary."""
+    output = raw_output or ""
+
+    cleaned = _FENCE_RE.sub("", output).strip()
     try:
         parsed = json.loads(cleaned)
         if isinstance(parsed, dict) and isinstance(parsed.get("summary"), str):
             return parsed["summary"].strip()
     except json.JSONDecodeError:
         pass
-    match = re.search(r'["\']?summary["\']?\s*:\s*["\'](.*?)["\']\s*}', cleaned, re.DOTALL)
+
+    match = re.search(r'\{.*?"summary".*?\}', output, re.DOTALL)
     if match:
-        return match.group(1).replace('\\"', '"').strip()
-    return cleaned if cleaned and not cleaned.startswith(("{", "[")) else ""
+        try:
+            parsed = json.loads(match.group(0))
+            if isinstance(parsed, dict) and isinstance(parsed.get("summary"), str):
+                return parsed["summary"].strip()
+        except json.JSONDecodeError:
+            pass
+
+    try:
+        parsed = ast.literal_eval(output)
+        if isinstance(parsed, dict) and isinstance(parsed.get("summary"), str):
+            return parsed["summary"].strip()
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        pass
+
+    match = re.search(r'["\']?summary["\']\s*:\s*"(.*)', output, re.DOTALL)
+    if match:
+        text = match.group(1)
+        if text.endswith('"}'):
+            text = text[:-2]
+        elif text.endswith('"'):
+            text = text[:-1]
+        return text.strip()
+
+    match = re.search(r'["\']?summary["\']\s*:\s*\\+"(.*)', output, re.DOTALL)
+    if match:
+        text = re.split(r'\\+"(?:\s*})?\s*$', match.group(1), maxsplit=1)[0]
+        return text.replace('\\"', '"').strip()
+
+    if cleaned and not cleaned.startswith(("{", "[")) and len(_TOKEN_RE.findall(cleaned)) >= 6:
+        return cleaned
+    return ""
 
 
 def summarize(
