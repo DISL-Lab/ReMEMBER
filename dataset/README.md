@@ -139,7 +139,8 @@ all.
 `PROVENANCE.json` records the payload hash and counts, the v1 index and split
 hashes, the SHA-256 of the three read-only inputs the payload was built from,
 the two segmentations, and the coordinate corrections. `scripts/build_payload.py`
-is the join that produced it.
+is the join that produced it — an internal build script, not part of this
+release.
 
 ## Reading it
 

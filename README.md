@@ -33,7 +33,6 @@ This is the official github repository for "Don't Scroll Back: Missing-Evidence 
   to be downloaded.
 - [`evaluation/`](evaluation/README.md): `evaluate.py`, the whole evaluator in one file.
 - [`remember/`](remember/README.md): the end-to-end ReMEMber method.
-- [`benchmark/`](benchmark/README.md): the eight-stage annotation pipeline.
 
 ## Install
 
@@ -69,10 +68,3 @@ contract.
 - ReMEMber method: [`remember/README.md`](remember/README.md)
 - Evaluation: [`evaluation/README.md`](evaluation/README.md)
 - Dataset: [`dataset/README.md`](dataset/README.md)
-- Dataset generation: [`benchmark/README.md`](benchmark/README.md)
-
-## Release check
-
-```bash
-python scripts/validate_release.py
-```
