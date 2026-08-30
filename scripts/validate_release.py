@@ -35,13 +35,16 @@ FORBIDDEN_DATA_KEYS = {
     "reasoning", "raw_output", "speaker", "speakers", "time", "timestamp", "media",
     "media_url", "url", "urls",
 }
-# The two text-bearing payload shards, one per conversational domain. These
-# are the only `.gz` files the release may carry. Sorted order is the
+# The three text-bearing payload shards, across two conversational domains.
+# These are the only `.gz` files the release may carry. Sorted order is the
 # canonical concatenation order: chitchat's L+R windows precede workplace's E
-# windows in the split file, so alphabetical (chitchat < workplace) matches -
-# `_payload_integrity()` verifies this order directly rather than assuming it.
+# windows in the split file (and workplace_1 precedes workplace_2), so
+# alphabetical filename order matches - `_payload_integrity()` verifies this
+# order directly rather than assuming it.
 CANONICAL_PAYLOAD_SHARDS = (
-    Path("remember_900_chitchat.jsonl.gz"), Path("remember_900_workplace.jsonl.gz"),
+    Path("remember_900_chitchat.jsonl.gz"),
+    Path("remember_900_workplace_1.jsonl.gz"),
+    Path("remember_900_workplace_2.jsonl.gz"),
 )
 ALLOWED_DATASET_FILES = frozenset({
     Path("README.md"), Path("DATASET_CARD.md"), Path("schema.json"), Path("metadata.json"),

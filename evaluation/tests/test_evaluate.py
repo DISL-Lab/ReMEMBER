@@ -143,12 +143,13 @@ def test_ordered_ids_digest_matches_the_canonical_split_file():
 
 
 def test_the_published_domain_shards_are_the_canonical_population():
-    """The two shipped domain shards, loaded together, are the canonical 900."""
+    """The three shipped domain shards, loaded together, are the canonical 900."""
     benchmark = ev.load_benchmark(ROOT / "dataset")
     assert ev.is_canonical_benchmark(benchmark)
     assert len(benchmark.ordered_ids) == 900
     assert set(benchmark.artifact_hashes) == {
-        "remember_900_chitchat.jsonl.gz", "remember_900_workplace.jsonl.gz"}
+        "remember_900_chitchat.jsonl.gz", "remember_900_workplace_1.jsonl.gz",
+        "remember_900_workplace_2.jsonl.gz"}
     ev.require_canonical_population(benchmark, allow_partial=False)
 
 

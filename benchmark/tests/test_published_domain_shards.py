@@ -1,13 +1,15 @@
-"""Regression pins for the two domain-split benchmark shards.
+"""Regression pins for the three domain-split benchmark shards.
 
-The published payload ships as two gzipped JSONL files, one per conversational
-domain - `remember_900_chitchat.jsonl.gz` (LoCoMo + RealTalk) and
-`remember_900_workplace.jsonl.gz` (EverMemBench) - rather than one, so each
-stays comfortably under GitHub's recommended file-size warning. Loading both
-in filename order reconstructs the exact canonical split order: the split
-groups windows into contiguous L, R, E blocks, so chitchat's L+R rows precede
-workplace's E rows either way. Every released string is exactly what the
-canonical evaluators read - MR and MKF each apply their own `validation`
+The published payload ships as three gzipped JSONL files across two
+conversational domains - `remember_900_chitchat.jsonl.gz` (LoCoMo + RealTalk)
+and `remember_900_workplace_1.jsonl.gz` / `remember_900_workplace_2.jsonl.gz`
+(EverMemBench, split by count) - rather than one, so each stays comfortably
+under GitHub's recommended file-size warning (EverMemBench alone is 600 of 900
+windows). Loading all three in filename order reconstructs the exact canonical
+split order: the split groups windows into contiguous L, R, E blocks, so
+chitchat's L+R rows precede workplace's E rows either way, and workplace_1
+precedes workplace_2 by construction. Every released string is exactly what
+the canonical evaluators read - MR and MKF each apply their own `validation`
 filter to the same evidence list rather than being shipped two different
 texts.
 """
@@ -21,14 +23,20 @@ import pytest
 
 
 DATASET = Path(__file__).parents[2] / "dataset"
-SHARDS = {
-    "chitchat": DATASET / "remember_900_chitchat.jsonl.gz",
-    "workplace": DATASET / "remember_900_workplace.jsonl.gz",
+SHARD_DOMAIN = {
+    "remember_900_chitchat.jsonl.gz": "chitchat",
+    "remember_900_workplace_1.jsonl.gz": "workplace",
+    "remember_900_workplace_2.jsonl.gz": "workplace",
 }
 SHARD_SHA256 = {
-    "chitchat": "f4ed0a3b6f1202e419bd45d87bfa7d83f42b0ebdb962f4faae869cc86ec4874f",
-    "workplace": "d09db090ef6362aebb79030098109df3dc0a69ca1b9996e9033f9a4299e6865f",
+    "remember_900_chitchat.jsonl.gz":
+        "f4ed0a3b6f1202e419bd45d87bfa7d83f42b0ebdb962f4faae869cc86ec4874f",
+    "remember_900_workplace_1.jsonl.gz":
+        "b36f285b374eb92b3a34aab790f485a9ca70a4d13c0661e80111627ae92faac8",
+    "remember_900_workplace_2.jsonl.gz":
+        "f0f5cf5922fcf4bd2ac6f77e0bd1654bce3c5becccab21726f7aec2544efb232",
 }
+SHARDS = {name: DATASET / name for name in SHARD_DOMAIN}
 DOMAIN_GROUP = {"evermembench": "workplace", "locomo": "chitchat", "realtalk": "chitchat"}
 
 EXPECTED_COUNTS = {
@@ -36,7 +44,11 @@ EXPECTED_COUNTS = {
     "evidence_candidates": 8450, "evidence_validated": 4135,
     "salient_utterances": 7245,
 }
-EXPECTED_SHARD_WINDOWS = {"chitchat": 300, "workplace": 600}
+EXPECTED_SHARD_WINDOWS = {
+    "remember_900_chitchat.jsonl.gz": 300,
+    "remember_900_workplace_1.jsonl.gz": 300,
+    "remember_900_workplace_2.jsonl.gz": 300,
+}
 RANGE_VALUES = {"8k~16k", "16k~32k", "32k~64k", "64k~128k", "128k~160k"}
 SOURCE_BY_PREFIX = {"E": "evermembench", "L": "locomo", "R": "realtalk"}
 
@@ -58,28 +70,46 @@ def shard_rows():
 @pytest.fixture(scope="module")
 def rows(shard_rows):
     """All 900 rows, concatenated in the same order the evaluator loads them
-    (filename order: chitchat, then workplace)."""
-    return shard_rows["chitchat"] + shard_rows["workplace"]
+    (sorted filename order: chitchat, workplace_1, workplace_2)."""
+    combined = []
+    for name in sorted(shard_rows):
+        combined.extend(shard_rows[name])
+    return combined
 
 
 def test_shards_are_the_only_pinned_gzip_files():
     for name, path in SHARDS.items():
         assert path.is_file(), name
         assert hashlib.sha256(path.read_bytes()).hexdigest() == SHARD_SHA256[name]
-    assert sorted(p.name for p in DATASET.glob("*.jsonl.gz")) == sorted(
-        p.name for p in SHARDS.values())
+    assert sorted(p.name for p in DATASET.glob("*.jsonl.gz")) == sorted(SHARDS)
+
+
+def test_no_shard_exceeds_githubs_recommended_size_warning():
+    for name, path in SHARDS.items():
+        assert path.stat().st_size < 50_000_000, name
 
 
 def test_each_shard_holds_exactly_its_own_domain(shard_rows):
     for shard_name, group_rows in shard_rows.items():
         assert len(group_rows) == EXPECTED_SHARD_WINDOWS[shard_name]
-        assert all(DOMAIN_GROUP[row["source"]] == shard_name for row in group_rows)
+        expected_domain = SHARD_DOMAIN[shard_name]
+        assert all(DOMAIN_GROUP[row["source"]] == expected_domain for row in group_rows)
 
 
 def test_filename_order_reconstructs_the_canonical_split_order(rows):
-    """Concatenating chitchat then workplace, alphabetically, must equal
-    dataset/splits/main_900.txt exactly - this is what the evaluator relies on."""
+    """Concatenating chitchat, workplace_1, workplace_2, alphabetically, must
+    equal dataset/splits/main_900.txt exactly - this is what the evaluator
+    relies on."""
     assert [row["window_id"] for row in rows] == read_ids(DATASET / "splits/main_900.txt")
+
+
+def test_workplace_shards_are_contiguous_and_order_preserving(shard_rows):
+    """workplace_1's windows must all precede workplace_2's in the split."""
+    ids = read_ids(DATASET / "splits/main_900.txt")
+    workplace_ids = [wid for wid in ids if wid[0] == "E"]
+    combined = ([row["window_id"] for row in shard_rows["remember_900_workplace_1.jsonl.gz"]]
+                + [row["window_id"] for row in shard_rows["remember_900_workplace_2.jsonl.gz"]])
+    assert combined == workplace_ids
 
 
 def test_published_payload_has_the_paper_population(rows):
@@ -173,8 +203,8 @@ def test_published_v1_index_bytes_are_unchanged():
 def test_provenance_file_matches_the_shipped_shards(rows):
     provenance = json.loads((DATASET / "PROVENANCE.json").read_text(encoding="utf-8"))
     shards = provenance["artifacts"]["shards"]
-    for name, path in SHARDS.items():
-        assert shards[name]["sha256"] == SHARD_SHA256[name]
+    pinned = {entry["path"]: entry["sha256"] for entry in shards.values()}
+    assert pinned == SHARD_SHA256
     assert provenance["artifacts"]["counts"] == EXPECTED_COUNTS
     assert provenance["artifacts"]["v1_index"]["sha256"] == hashlib.sha256(
         (DATASET / "annotations/remember_900_annotations.jsonl").read_bytes()).hexdigest()

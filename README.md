@@ -27,8 +27,8 @@ This is the official github repository for "Don't Scroll Back: Missing-Evidence 
 
 ---
 
-- [`dataset/`](dataset/README.md): the 900-window benchmark, split into two
-  self-contained domain shards (chit-chat, workplace) — dialogue, gold gaps,
+- [`dataset/`](dataset/README.md): the 900-window benchmark, split into three
+  self-contained domain shards (chit-chat, workplace ×2) — dialogue, gold gaps,
   evidence, and salient utterances all live in the record, so nothing else has
   to be downloaded.
 - [`evaluation/`](evaluation/README.md): `evaluate.py`, the whole evaluator in one file.

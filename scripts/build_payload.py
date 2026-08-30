@@ -4,12 +4,14 @@ This is the join that defines the published benchmark. It is kept in the
 repository so the artifact is reproducible and its rulings are auditable; it is
 not part of the evaluation runtime and nothing imports it.
 
-The benchmark ships as two files, one per conversational domain -
+The benchmark ships as three files across two conversational domains -
 `remember_900_chitchat.jsonl.gz` (LoCoMo + RealTalk) and
-`remember_900_workplace.jsonl.gz` (EverMemBench) - rather than one, so each
-stays comfortably under GitHub's recommended file-size warning. Each record's
-own `source`/`domain` field is unchanged (still evermembench/locomo/realtalk);
-only which file it lands in depends on the two-way grouping.
+`remember_900_workplace_1.jsonl.gz` / `remember_900_workplace_2.jsonl.gz`
+(EverMemBench, split by count) - rather than one, so each stays comfortably
+under GitHub's recommended file-size warning. Each record's own
+`source`/`domain` field is unchanged (still evermembench/locomo/realtalk);
+only which file it lands in depends on the two-way grouping (and, for
+workplace, which half).
 
 Inputs are supplied on the command line. The published payload was built from
 these exact bytes:
@@ -65,13 +67,29 @@ SOURCE_BY_PREFIX = {"E": "evermembench", "L": "locomo", "R": "realtalk"}
 
 # Two conversational domains, not three source corpora: EverMemBench is
 # workplace dialogue; LoCoMo and RealTalk are both casual chit-chat. The split
-# file groups windows into contiguous L, R, E blocks, so writing the chit-chat
-# shard first and the workplace shard second (alphabetical filename order)
-# reconstructs the exact split order when the two are loaded together -
-# verified by a test, not relied on as a silent assumption.
+# file groups windows into contiguous L, R, E blocks, so writing chit-chat's
+# shard(s) first and workplace's second (alphabetical filename order, and
+# `workplace_1` before `workplace_2`) reconstructs the exact split order when
+# every shard is loaded together - verified by a test, not relied on as a
+# silent assumption. Workplace is further split into two files by count,
+# preserving order, purely so each shard stays comfortably under GitHub's
+# recommended file-size warning (EverMemBench alone is 600 of 900 windows).
 DOMAIN_GROUP = {"evermembench": "workplace", "locomo": "chitchat", "realtalk": "chitchat"}
-SHARD_FILENAME = {"chitchat": "remember_900_chitchat.jsonl.gz",
-                  "workplace": "remember_900_workplace.jsonl.gz"}
+SHARD_FILENAMES = {
+    "chitchat": ["remember_900_chitchat.jsonl.gz"],
+    "workplace": ["remember_900_workplace_1.jsonl.gz", "remember_900_workplace_2.jsonl.gz"],
+}
+
+
+def _split_evenly(items, n):
+    """n contiguous, order-preserving chunks, as equal in size as possible."""
+    size, remainder = divmod(len(items), n)
+    chunks, start = [], 0
+    for i in range(n):
+        end = start + size + (1 if i < remainder else 0)
+        chunks.append(items[start:end])
+        start = end
+    return chunks
 
 
 def remove_emojis(text):
@@ -241,16 +259,18 @@ def main():
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     shard_stats = {}
-    for group_name, filename in SHARD_FILENAME.items():
+    for group_name, filenames in SHARD_FILENAMES.items():
         shard_records = [r for r in records if DOMAIN_GROUP[r["source"]] == group_name]
-        out = out_dir / filename
-        with gzip.GzipFile(filename="", mode="wb", fileobj=out.open("wb"), mtime=0, compresslevel=9) as gz:
-            for record in shard_records:
-                gz.write(json.dumps(record, ensure_ascii=False, sort_keys=True,
-                                    separators=(",", ":")).encode("utf-8"))
-                gz.write(b"\n")
-        shard_stats[group_name] = {"path": filename, "windows": len(shard_records),
-                                   "bytes": out.stat().st_size}
+        for filename, chunk in zip(filenames, _split_evenly(shard_records, len(filenames))):
+            out = out_dir / filename
+            with gzip.GzipFile(filename="", mode="wb", fileobj=out.open("wb"), mtime=0,
+                               compresslevel=9) as gz:
+                for record in chunk:
+                    gz.write(json.dumps(record, ensure_ascii=False, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8"))
+                    gz.write(b"\n")
+            shard_stats[filename] = {"domain": group_name, "windows": len(chunk),
+                                     "bytes": out.stat().st_size}
     print(json.dumps({
         "counts": stats, "shards": shard_stats,
         "gaps_excluded_empty_target": excluded_empty_target,

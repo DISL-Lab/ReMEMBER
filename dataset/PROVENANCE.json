@@ -18,13 +18,21 @@
         "sha256": "f4ed0a3b6f1202e419bd45d87bfa7d83f42b0ebdb962f4faae869cc86ec4874f",
         "windows": 300
       },
-      "workplace": {
+      "workplace_1": {
         "domains": [
           "evermembench"
         ],
-        "path": "remember_900_workplace.jsonl.gz",
-        "sha256": "d09db090ef6362aebb79030098109df3dc0a69ca1b9996e9033f9a4299e6865f",
-        "windows": 600
+        "path": "remember_900_workplace_1.jsonl.gz",
+        "sha256": "b36f285b374eb92b3a34aab790f485a9ca70a4d13c0661e80111627ae92faac8",
+        "windows": 300
+      },
+      "workplace_2": {
+        "domains": [
+          "evermembench"
+        ],
+        "path": "remember_900_workplace_2.jsonl.gz",
+        "sha256": "f0f5cf5922fcf4bd2ac6f77e0bd1654bce3c5becccab21726f7aec2544efb232",
+        "windows": 300
       }
     },
     "split": {
@@ -72,11 +80,12 @@
       "locomo",
       "realtalk"
     ],
-    "concatenation_order": "chitchat then workplace (alphabetical filename order), which reconstructs the split file's exact order because it groups windows into contiguous L, R, E blocks",
+    "concatenation_order": "chitchat, then workplace_1, then workplace_2 (alphabetical filename order), which reconstructs the split file's exact order: it groups windows into contiguous L, R, E blocks, and workplace is split by count preserving order",
     "rule": "two conversational domains, not three source corpora",
     "workplace": [
       "evermembench"
-    ]
+    ],
+    "workplace_split_reason": "EverMemBench alone is 600 of 900 windows (~64 MB compressed); splitting it in two keeps every shard under GitHub's recommended 50 MB file-size warning"
   },
   "gap_denominator": {
     "note": "format_gap_cases's own literal filter (any row with non-empty validated) would include 2 more rows whose target_sentence is empty; this release keeps one gap set across MR, MKF, and v1 rather than a third, MKF-only population",

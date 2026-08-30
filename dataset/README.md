@@ -4,24 +4,25 @@ This directory publishes two views of the same 900-window release.
 
 ## The self-contained benchmark (canonical)
 
-Two gzipped JSONL files, one per conversational domain, together holding all
-900 windows in the exact order of `splits/main_900.txt`:
+Three gzipped JSONL files, across two conversational domains, together holding
+all 900 windows in the exact order of `splits/main_900.txt`:
 
 | file | domain | windows |
 |---|---|---|
 | `remember_900_chitchat.jsonl.gz` | LoCoMo + RealTalk (casual conversation) | 300 |
-| `remember_900_workplace.jsonl.gz` | EverMemBench (professional conversation) | 600 |
+| `remember_900_workplace_1.jsonl.gz` | EverMemBench (professional conversation) | 300 |
+| `remember_900_workplace_2.jsonl.gz` | EverMemBench (professional conversation) | 300 |
 
-The split follows the underlying source corpora, not an arbitrary cut: each
-record's own `source`/`domain` field still names its corpus
-(`evermembench`/`locomo`/`realtalk`) unchanged. The two-file split exists so
-each file stays well under GitHub's recommended file-size warning, and so a
-consumer who only wants one conversational register doesn't have to download
-the other. `remember_900_chitchat.jsonl.gz`'s windows precede
-`remember_900_workplace.jsonl.gz`'s in `splits/main_900.txt`, so loading the
-two files in filename (alphabetical) order and concatenating reconstructs the
-canonical order exactly — `evaluation/evaluate.py --benchmark dataset` does
-this automatically.
+The domain split follows the underlying source corpora, not an arbitrary cut:
+each record's own `source`/`domain` field still names its corpus
+(`evermembench`/`locomo`/`realtalk`) unchanged. EverMemBench alone is 600 of
+900 windows (~64 MB compressed), so it is further split by count into two
+files, in order, purely to keep every file well under GitHub's recommended
+file-size warning — that split carries no semantic meaning. `chitchat`'s
+windows precede `workplace_1`'s, which precede `workplace_2`'s, in
+`splits/main_900.txt`, so loading all three files in filename (alphabetical)
+order and concatenating reconstructs the canonical order exactly —
+`evaluation/evaluate.py --benchmark dataset` does this automatically.
 
 Every record carries everything an evaluation needs, so no research tree, no
 upstream corpus download, and no sentence splitter is required to use it:
@@ -90,7 +91,7 @@ vote counts, and votes. `schema.json` and `metadata.json` describe and hash it.
 Its denominators remain 900 / 1,498 / 4,135.
 
 Use the v1 index when you want to inspect annotation outcomes without
-redistributing corpus content. Use the two `remember_900_*.jsonl.gz` shards
+redistributing corpus content. Use the three `remember_900_*.jsonl.gz` shards
 when you want to run or evaluate a system.
 
 ## What is redistributed
@@ -150,7 +151,8 @@ def read_shard(path):
         return [json.loads(line) for line in handle if line.strip()]
 
 rows = (read_shard("dataset/remember_900_chitchat.jsonl.gz")
-        + read_shard("dataset/remember_900_workplace.jsonl.gz"))
+        + read_shard("dataset/remember_900_workplace_1.jsonl.gz")
+        + read_shard("dataset/remember_900_workplace_2.jsonl.gz"))
 
 assert len(rows) == 900
 print(rows[0]["window_id"], len(rows[0]["history"]), len(rows[0]["gaps"]))

@@ -19,17 +19,18 @@ run the judge locally.
 **Benchmark** — a v2-shaped file, or a directory of them:
 
 ```bash
---benchmark dataset                                    # both domain shards together (900 windows)
---benchmark dataset/remember_900_workplace.jsonl.gz     # one shard only
---benchmark my_predictions.jsonl                        # or a standalone uncompressed .jsonl
+--benchmark dataset                                        # all three domain shards together (900 windows)
+--benchmark dataset/remember_900_workplace_1.jsonl.gz       # one shard only
+--benchmark my_predictions.jsonl                            # or a standalone uncompressed .jsonl
 ```
 
-The released benchmark ships as two files by conversational domain -
+The released benchmark ships as three files across two conversational domains -
 `remember_900_chitchat.jsonl.gz` (LoCoMo + RealTalk, 300 windows) and
-`remember_900_workplace.jsonl.gz` (EverMemBench, 600 windows) - so each stays
-well under GitHub's file-size warning threshold. Pointing `--benchmark` at
-`dataset` (or any directory) loads every `.jsonl`/`.jsonl.gz` file inside it, in
-filename order, and treats them as one benchmark; for the shipped shards that
+`remember_900_workplace_1.jsonl.gz` / `remember_900_workplace_2.jsonl.gz`
+(EverMemBench, 300 windows each, split by count only) - so each stays well
+under GitHub's file-size warning threshold. Pointing `--benchmark` at `dataset`
+(or any directory) loads every `.jsonl`/`.jsonl.gz` file inside it, in filename
+order, and treats them as one benchmark; for the shipped shards that
 reconstructs the exact canonical 900-window order. A run over anything other
 than the exact canonical 900 windows requires `--allow-partial`.
 

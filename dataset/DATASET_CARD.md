@@ -2,18 +2,18 @@
 
 ## Two views of one release
 
-- **`remember_900_chitchat.jsonl.gz` + `remember_900_workplace.jsonl.gz`
-  (canonical).** Self-contained: every record carries its own dialogue history,
-  current window, gold gaps, every evidence candidate (accepted and rejected,
-  tagged by `validation`), and salient utterances. Split by conversational
-  domain — chit-chat (LoCoMo + RealTalk, 300 windows) and workplace
-  (EverMemBench, 600 windows) — rather than shipped as one file, so each stays
-  under GitHub's file-size warning; each record's own `source`/`domain` field
-  is unaffected. Population: 900 windows, 1,498 gaps, 8,450 evidence candidates
-  (4,135 with `validation == 1`), 7,245 flattened salient utterances. Every
-  string is the recorded annotation text, never re-derived from a coordinate.
-  This is what the evaluator reads; MR and MKF each apply their own filter to
-  the same evidence list.
+- **Three `remember_900_*.jsonl.gz` shards (canonical).** Self-contained: every
+  record carries its own dialogue history, current window, gold gaps, every
+  evidence candidate (accepted and rejected, tagged by `validation`), and
+  salient utterances. Split by conversational domain — `chitchat` (LoCoMo +
+  RealTalk, 300 windows) and `workplace_1` + `workplace_2` (EverMemBench, 300
+  windows each, split by count) — rather than shipped as one file, so each
+  stays under GitHub's file-size warning; each record's own `source`/`domain`
+  field is unaffected. Population: 900 windows, 1,498 gaps, 8,450 evidence
+  candidates (4,135 with `validation == 1`), 7,245 flattened salient
+  utterances. Every string is the recorded annotation text, never re-derived
+  from a coordinate. This is what the evaluator reads; MR and MKF each apply
+  their own filter to the same evidence list.
 - **`annotations/remember_900_annotations.jsonl` (v1 compatibility index).** The
   original coordinate-only view, byte-for-byte unchanged, described below.
 
@@ -70,7 +70,7 @@ corpora is the downstream user's responsibility when working from that file:
 `source_id` identifies an upstream evidence coordinate. Neither key grants
 access to source content.
 
-This does not apply to the two `remember_900_*.jsonl.gz` shards, which carry
+This does not apply to the three `remember_900_*.jsonl.gz` shards, which carry
 the dialogue itself and need no external join.
 
 ## Limitations and responsible use
@@ -97,7 +97,8 @@ The project-authored annotations are provided under the repository's MIT
 License. That license does not cover the upstream corpora.
 
 - `annotations/remember_900_annotations.jsonl` redistributes no upstream text.
-- `remember_900_chitchat.jsonl.gz` and `remember_900_workplace.jsonl.gz` **do**
-  redistribute upstream dialogue verbatim, under authorization covering
-  EverMemBench, LoCoMo, and RealTalk. Redistributing either further means
-  redistributing those corpora's text, subject to their terms.
+- `remember_900_chitchat.jsonl.gz`, `remember_900_workplace_1.jsonl.gz`, and
+  `remember_900_workplace_2.jsonl.gz` **do** redistribute upstream dialogue
+  verbatim, under authorization covering EverMemBench, LoCoMo, and RealTalk.
+  Redistributing any of them further means redistributing those corpora's
+  text, subject to their terms.
