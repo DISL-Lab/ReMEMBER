@@ -75,6 +75,11 @@ FACTUALITY_ALIASES = {
     "factual": "no error", "none": "no error",
 }
 
+# Matches analysis_v3's `length_group_for_tokens`: bucket edges in thousands
+# of tokens against `tok_end`, not the dataset's finer 5-way `range` field.
+LENGTH_BIN_EDGES_K = (32, 64)
+LENGTH_BUCKETS = ("8K-32K", "32K-64K", "64K-160K")
+
 
 class InputError(ValueError):
     """A caller-supplied input is missing, malformed, or inconsistent."""
@@ -824,6 +829,22 @@ def normalize_factuality(
     return results
 
 
+def length_bucket(tok_end: Any) -> str | None:
+    """Matches analysis_v3's `length_group_for_tokens`/`length_label_for_tokens`:
+    buckets a window's `tok_end` against LENGTH_BIN_EDGES_K = (32, 64) (in
+    thousands of tokens), independent of the dataset's own 5-way `range`
+    sampling-stratum field. Returns None (analysis_v3's "unknown") when
+    `tok_end` is missing or not a real number."""
+    if isinstance(tok_end, bool) or not isinstance(tok_end, (int, float)):
+        return None
+    if isinstance(tok_end, float) and math.isnan(tok_end):
+        return None
+    for edge, label in zip(LENGTH_BIN_EDGES_K, LENGTH_BUCKETS):
+        if tok_end < edge * 1000:
+            return label
+    return LENGTH_BUCKETS[-1]
+
+
 # ------------------------------------------------------------------- rendering
 
 def render_window(turns: Sequence[Mapping[str, Any]]) -> str:
@@ -1471,6 +1492,7 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference,
         if window_id not in predictions:
             continue
         record: dict[str, Any] = {"window_id": window_id}
+        record["length_bucket"] = length_bucket(row.get("tok_end"))
         sentences = split_summary_sentences(predictions[window_id]["summary"])
         record["summary_sentences"] = len(sentences)
 
@@ -1582,15 +1604,8 @@ def _aggregate(per_window: Sequence[Mapping[str, Any]], metric: str, *,
     return result
 
 
-def score_run(per_window: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    scores: dict[str, Any] = {
-        "metadata": {
-            "macro_definition": "numerator is the sum of per-window ratios; "
-                                "denominator is windows_with_items",
-            "micro_definition": "numerator and denominator are summed across windows",
-            "factuality_categories": list(FACTUALITY_CATEGORIES),
-        }
-    }
+def _score_metrics(per_window: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    scores: dict[str, Any] = {}
     for metric in ("mr", "mkf", "wkf"):
         if any(metric in row for row in per_window):
             failures = sum(1 for row in per_window if row.get(metric, {}).get("parse_failure"))
@@ -1629,26 +1644,55 @@ def score_run(per_window: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return scores
 
 
+def score_run(per_window: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Overall scores, plus each metric's breakdown across the paper's three
+    `length_bucket` groups (analysis_v3's `LENGTH_BIN_EDGES_K` on `tok_end`),
+    matching how the paper reports MR/MKF/WKF/conciseness/factuality by
+    dialogue length rather than the dataset's finer 5-way `range` field."""
+    scores: dict[str, Any] = {
+        "metadata": {
+            "macro_definition": "numerator is the sum of per-window ratios; "
+                                "denominator is windows_with_items",
+            "micro_definition": "numerator and denominator are summed across windows",
+            "factuality_categories": list(FACTUALITY_CATEGORIES),
+            "length_buckets": list(LENGTH_BUCKETS),
+        }
+    }
+    for name, block in _score_metrics(per_window).items():
+        by_bucket = {}
+        for bucket in LENGTH_BUCKETS:
+            subset = [row for row in per_window if row.get("length_bucket") == bucket]
+            bucket_scores = _score_metrics(subset)
+            if name in bucket_scores:
+                by_bucket[bucket] = bucket_scores[name]
+        if by_bucket:
+            block["by_length_bucket"] = by_bucket
+        scores[name] = block
+    return scores
+
+
 def scores_to_csv(scores: Mapping[str, Any]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow([
-        "metric", "aggregation", "value", "numerator", "denominator",
+        "metric", "length_bucket", "aggregation", "value", "numerator", "denominator",
         "windows_with_items", "windows_without_items", "parse_failure_count", "diagnostic",
     ])
     for metric in REPORTED_METRICS:
         block = scores.get(metric)
         if not block:
             continue
-        for aggregation in ("micro", "macro"):
-            entry = block[aggregation]
-            writer.writerow([
-                metric, aggregation, f"{entry['value']:.6f}",
-                f"{float(entry['numerator']):.6f}", entry["denominator"],
-                entry["windows_with_items"],
-                entry["windows_without_items"], entry["parse_failure_count"],
-                "true" if block.get("diagnostic") else "false",
-            ])
+        by_bucket = block.get("by_length_bucket", {})
+        for length_bucket_label, bucket_block in [("All", block), *by_bucket.items()]:
+            for aggregation in ("micro", "macro"):
+                entry = bucket_block[aggregation]
+                writer.writerow([
+                    metric, length_bucket_label, aggregation, f"{entry['value']:.6f}",
+                    f"{float(entry['numerator']):.6f}", entry["denominator"],
+                    entry["windows_with_items"],
+                    entry["windows_without_items"], entry["parse_failure_count"],
+                    "true" if block.get("diagnostic") else "false",
+                ])
     return buffer.getvalue()
 
 
@@ -1880,7 +1924,7 @@ def _reload_and_validate(directory: Path, per_window: Sequence[Mapping[str, Any]
     for name, digest in manifest.get("output_hashes", {}).items():
         if sha256_file(directory / name) != digest:
             raise RuntimeError(f"staged {name} does not match its recorded hash")
-    if not (directory / "scores.csv").read_text(encoding="utf-8").startswith("metric,aggregation,"):
+    if not (directory / "scores.csv").read_text(encoding="utf-8").startswith("metric,length_bucket,aggregation,"):
         raise RuntimeError("staged scores.csv has an unexpected header")
 
 
