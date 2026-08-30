@@ -1,3 +1,0 @@
-{"schema_version":"1.0","dialogue_id":"E_topic-1_group-1","source":"evermembench","turns":[{"time":"2024-01-01 09:00:00","speaker":"speaker_a","dialogue":"Alpha one."},{"time":"2024-01-01 09:00:01","speaker":"speaker_b","dialogue":"Beta two."}]}
-{"schema_version":"1.0","dialogue_id":"L_topic-1_group-1","source":"locomo","turns":[{"time":"2024-02-01 10:00:00","speaker":"speaker_a","dialogue":"Gamma three."},{"time":"2024-02-01 10:00:01","speaker":"speaker_b","dialogue":"Delta four."}]}
-{"schema_version":"1.0","dialogue_id":"R_topic-1_group-1","source":"realtalk","turns":[{"time":"2024-03-01 11:00:00","speaker":"speaker_a","dialogue":"Epsilon five."},{"time":"2024-03-01 11:00:01","speaker":"speaker_b","dialogue":"Zeta six."}]}
