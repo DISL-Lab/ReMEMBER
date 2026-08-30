@@ -247,28 +247,60 @@ def validate_benchmark_row(row: Mapping[str, Any], location: str) -> None:
             _require(item.get("validation") in (0, 1), f"{item_where}.validation must be 0 or 1")
 
 
-def load_benchmark(path: Path) -> BenchmarkInput:
-    """Load and fully validate the published single-file benchmark payload."""
-    path = Path(path)
-    if path.is_dir():
-        raise InputError(
-            f"{path} is a directory; this release publishes the benchmark as one "
-            "JSONL file (optionally gzipped). Pass that file."
-        )
-    if not path.is_file():
-        raise InputError(f"benchmark file does not exist: {path}")
-
-    rows = read_jsonl(path)
-    _require(bool(rows), f"{path}: benchmark file is empty")
+def _validate_rows(rows: Sequence[dict[str, Any]], location: str) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
     for index, row in enumerate(rows):
-        validate_benchmark_row(row, f"{path}[{index}]")
+        validate_benchmark_row(row, f"{location}[{index}]")
         window_id = row["window_id"]
-        _require(window_id not in seen, f"{path}: duplicate benchmark window_id: {window_id}")
+        _require(window_id not in seen, f"{location}: duplicate benchmark window_id: {window_id}")
         seen.add(window_id)
         ordered.append(window_id)
+    return ordered
 
+
+def load_benchmark(path: Path) -> BenchmarkInput:
+    """Load and fully validate the published benchmark payload.
+
+    A single file is the whole benchmark. A directory holds one file per
+    domain shard (`*.jsonl` / `*.jsonl.gz`); every file in it is loaded, in
+    filename order, and concatenated - this is how the released benchmark's
+    chit-chat and workplace shards reconstruct the canonical split order.
+    """
+    path = Path(path)
+    if path.is_dir():
+        shard_paths = sorted(p for p in path.iterdir()
+                             if p.is_file() and p.suffix in (".jsonl", ".gz"))
+        _require(bool(shard_paths), f"{path}: directory has no .jsonl/.jsonl.gz shards")
+        rows: list[dict[str, Any]] = []
+        ordered: list[str] = []
+        seen: set[str] = set()
+        artifact_hashes: dict[str, str] = {}
+        for shard_path in shard_paths:
+            shard_rows = read_jsonl(shard_path)
+            _require(bool(shard_rows), f"{shard_path}: benchmark shard is empty")
+            shard_ordered = _validate_rows(shard_rows, str(shard_path))
+            for window_id in shard_ordered:
+                _require(window_id not in seen,
+                         f"{path}: duplicate benchmark window_id across shards: {window_id}")
+                seen.add(window_id)
+            rows.extend(shard_rows)
+            ordered.extend(shard_ordered)
+            artifact_hashes[shard_path.name] = sha256_file(shard_path)
+        input_sha256 = sha256_text(canonical_json(
+            [{"name": name, "sha256": artifact_hashes[name]} for name in sorted(artifact_hashes)]
+        ))
+        return BenchmarkInput(
+            rows=tuple(rows), ordered_ids=tuple(ordered), artifact_hashes=artifact_hashes,
+            input_sha256=input_sha256, schema_sha256=None, manifest_sha256=None,
+            split_sha256=ordered_ids_sha256(ordered), construction="canonical-source-join",
+        )
+
+    if not path.is_file():
+        raise InputError(f"benchmark path does not exist: {path}")
+    rows = read_jsonl(path)
+    _require(bool(rows), f"{path}: benchmark file is empty")
+    ordered = _validate_rows(rows, str(path))
     digest = sha256_file(path)
     return BenchmarkInput(
         rows=tuple(rows),

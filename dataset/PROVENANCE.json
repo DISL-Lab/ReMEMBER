@@ -1,16 +1,31 @@
 {
   "artifacts": {
-    "payload": {
-      "counts": {
-        "evidence_candidates": 8450,
-        "evidence_validated": 4135,
-        "gaps": 1498,
-        "salient_utterances": 7245,
-        "windows": 900
+    "counts": {
+      "evidence_candidates": 8450,
+      "evidence_validated": 4135,
+      "gaps": 1498,
+      "salient_utterances": 7245,
+      "windows": 900
+    },
+    "record_schema_version": "2.0",
+    "shards": {
+      "chitchat": {
+        "domains": [
+          "locomo",
+          "realtalk"
+        ],
+        "path": "remember_900_chitchat.jsonl.gz",
+        "sha256": "f4ed0a3b6f1202e419bd45d87bfa7d83f42b0ebdb962f4faae869cc86ec4874f",
+        "windows": 300
       },
-      "path": "remember_900.jsonl.gz",
-      "record_schema_version": "2.0",
-      "sha256": "7cdfc045c81475debe3f4e1242666ce87f8ad1a980c71d3cdbbd79f3d76fb588"
+      "workplace": {
+        "domains": [
+          "evermembench"
+        ],
+        "path": "remember_900_workplace.jsonl.gz",
+        "sha256": "d09db090ef6362aebb79030098109df3dc0a69ca1b9996e9033f9a4299e6865f",
+        "windows": 600
+      }
     },
     "split": {
       "path": "splits/main_900.txt",
@@ -52,6 +67,17 @@
     "source_ids_shifted": 424
   },
   "design_rule": "Publish exactly the strings the canonical evaluators read from validated[].sentence and salient[].sentences; never re-derive text from a coordinate.",
+  "domain_grouping": {
+    "chitchat": [
+      "locomo",
+      "realtalk"
+    ],
+    "concatenation_order": "chitchat then workplace (alphabetical filename order), which reconstructs the split file's exact order because it groups windows into contiguous L, R, E blocks",
+    "rule": "two conversational domains, not three source corpora",
+    "workplace": [
+      "evermembench"
+    ]
+  },
   "gap_denominator": {
     "note": "format_gap_cases's own literal filter (any row with non-empty validated) would include 2 more rows whose target_sentence is empty; this release keeps one gap set across MR, MKF, and v1 rather than a third, MKF-only population",
     "rule": "target_sentence non-empty, matching release.sanitize_annotations and the v1 index",

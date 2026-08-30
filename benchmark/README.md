@@ -4,7 +4,7 @@
 > run or score a system — evaluate against the checked-in benchmark in
 > [`../dataset/`](../dataset/README.md) instead.
 >
-> It did not produce `dataset/remember_900.jsonl.gz`. That payload is the join
+> It did not produce the `dataset/remember_900_*.jsonl.gz` shards. Those payloads are the join
 > in [`../scripts/build_payload.py`](../scripts/build_payload.py), which resolves
 > coordinates under the segmentation the annotations were made with. This
 > package's `text_release` module uses a different splitter and a different

@@ -86,8 +86,29 @@ def test_benchmark_loads_from_plain_and_gzip_jsonl(tmp_path):
     assert plain.ordered_ids == ("E_U0001", "L_U0002")
 
 
-def test_benchmark_rejects_a_directory(tmp_path):
-    with pytest.raises(ev.InputError, match="one .* file"):
+def test_benchmark_directory_mode_loads_every_shard_in_filename_order(tmp_path):
+    rows = [json.loads(line) for line in BENCHMARK.read_text().splitlines() if line.strip()]
+    (tmp_path / "b_second.jsonl").write_text(json.dumps(rows[1]) + "\n", encoding="utf-8")
+    (tmp_path / "a_first.jsonl").write_text(json.dumps(rows[0]) + "\n", encoding="utf-8")
+    benchmark = ev.load_benchmark(tmp_path)
+    assert benchmark.ordered_ids == ("E_U0001", "L_U0002")  # a_first, then b_second
+    assert set(benchmark.artifact_hashes) == {"a_first.jsonl", "b_second.jsonl"}
+    assert benchmark.input_sha256 == ev.sha256_text(ev.canonical_json([
+        {"name": "a_first.jsonl", "sha256": ev.sha256_file(tmp_path / "a_first.jsonl")},
+        {"name": "b_second.jsonl", "sha256": ev.sha256_file(tmp_path / "b_second.jsonl")},
+    ]))
+
+
+def test_benchmark_directory_mode_rejects_a_duplicate_window_id_across_shards(tmp_path):
+    row = json.loads(BENCHMARK.read_text().splitlines()[0])
+    (tmp_path / "a.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    (tmp_path / "b.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+    with pytest.raises(ev.InputError, match="duplicate benchmark window_id across shards"):
+        ev.load_benchmark(tmp_path)
+
+
+def test_benchmark_directory_mode_rejects_an_empty_directory(tmp_path):
+    with pytest.raises(ev.InputError, match="no .jsonl"):
         ev.load_benchmark(tmp_path)
 
 
@@ -121,10 +142,13 @@ def test_ordered_ids_digest_matches_the_canonical_split_file():
     assert ev.ordered_ids_sha256(ids) == ev.CANONICAL_SPLIT_SHA256 == ev.sha256_file(split)
 
 
-def test_the_published_payload_is_the_canonical_population():
-    benchmark = ev.load_benchmark(ROOT / "dataset/remember_900.jsonl.gz")
+def test_the_published_domain_shards_are_the_canonical_population():
+    """The two shipped domain shards, loaded together, are the canonical 900."""
+    benchmark = ev.load_benchmark(ROOT / "dataset")
     assert ev.is_canonical_benchmark(benchmark)
     assert len(benchmark.ordered_ids) == 900
+    assert set(benchmark.artifact_hashes) == {
+        "remember_900_chitchat.jsonl.gz", "remember_900_workplace.jsonl.gz"}
     ev.require_canonical_population(benchmark, allow_partial=False)
 
 

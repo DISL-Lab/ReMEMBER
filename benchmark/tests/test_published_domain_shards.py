@@ -1,10 +1,15 @@
-"""Regression pins for the single self-contained benchmark file.
+"""Regression pins for the two domain-split benchmark shards.
 
-The published payload is one gzipped JSONL file holding all 900 windows with
-their dialogue text, gold gaps, evidence candidates, and salient utterances.
-Every released string is exactly what the canonical evaluators read - MR and
-MKF each apply their own `validation` filter to the same evidence list rather
-than being shipped two different texts.
+The published payload ships as two gzipped JSONL files, one per conversational
+domain - `remember_900_chitchat.jsonl.gz` (LoCoMo + RealTalk) and
+`remember_900_workplace.jsonl.gz` (EverMemBench) - rather than one, so each
+stays comfortably under GitHub's recommended file-size warning. Loading both
+in filename order reconstructs the exact canonical split order: the split
+groups windows into contiguous L, R, E blocks, so chitchat's L+R rows precede
+workplace's E rows either way. Every released string is exactly what the
+canonical evaluators read - MR and MKF each apply their own `validation`
+filter to the same evidence list rather than being shipped two different
+texts.
 """
 
 import gzip
@@ -16,14 +21,22 @@ import pytest
 
 
 DATASET = Path(__file__).parents[2] / "dataset"
-PAYLOAD = DATASET / "remember_900.jsonl.gz"
-PAYLOAD_SHA256 = "7cdfc045c81475debe3f4e1242666ce87f8ad1a980c71d3cdbbd79f3d76fb588"
+SHARDS = {
+    "chitchat": DATASET / "remember_900_chitchat.jsonl.gz",
+    "workplace": DATASET / "remember_900_workplace.jsonl.gz",
+}
+SHARD_SHA256 = {
+    "chitchat": "f4ed0a3b6f1202e419bd45d87bfa7d83f42b0ebdb962f4faae869cc86ec4874f",
+    "workplace": "d09db090ef6362aebb79030098109df3dc0a69ca1b9996e9033f9a4299e6865f",
+}
+DOMAIN_GROUP = {"evermembench": "workplace", "locomo": "chitchat", "realtalk": "chitchat"}
 
 EXPECTED_COUNTS = {
     "windows": 900, "gaps": 1498,
     "evidence_candidates": 8450, "evidence_validated": 4135,
     "salient_utterances": 7245,
 }
+EXPECTED_SHARD_WINDOWS = {"chitchat": 300, "workplace": 600}
 RANGE_VALUES = {"8k~16k", "16k~32k", "32k~64k", "64k~128k", "128k~160k"}
 SOURCE_BY_PREFIX = {"E": "evermembench", "L": "locomo", "R": "realtalk"}
 
@@ -32,19 +45,40 @@ def read_ids(path):
     return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-@pytest.fixture(scope="module")
-def rows():
-    with gzip.open(PAYLOAD, "rt", encoding="utf-8") as handle:
+def _read_shard(path):
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def test_published_payload_is_a_single_pinned_file():
-    assert PAYLOAD.is_file()
-    assert hashlib.sha256(PAYLOAD.read_bytes()).hexdigest() == PAYLOAD_SHA256
-    assert sorted(p.name for p in DATASET.glob("*.jsonl.gz")) == ["remember_900.jsonl.gz"]
+@pytest.fixture(scope="module")
+def shard_rows():
+    return {name: _read_shard(path) for name, path in SHARDS.items()}
 
 
-def test_published_payload_matches_the_ordered_split(rows):
+@pytest.fixture(scope="module")
+def rows(shard_rows):
+    """All 900 rows, concatenated in the same order the evaluator loads them
+    (filename order: chitchat, then workplace)."""
+    return shard_rows["chitchat"] + shard_rows["workplace"]
+
+
+def test_shards_are_the_only_pinned_gzip_files():
+    for name, path in SHARDS.items():
+        assert path.is_file(), name
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == SHARD_SHA256[name]
+    assert sorted(p.name for p in DATASET.glob("*.jsonl.gz")) == sorted(
+        p.name for p in SHARDS.values())
+
+
+def test_each_shard_holds_exactly_its_own_domain(shard_rows):
+    for shard_name, group_rows in shard_rows.items():
+        assert len(group_rows) == EXPECTED_SHARD_WINDOWS[shard_name]
+        assert all(DOMAIN_GROUP[row["source"]] == shard_name for row in group_rows)
+
+
+def test_filename_order_reconstructs_the_canonical_split_order(rows):
+    """Concatenating chitchat then workplace, alphabetically, must equal
+    dataset/splits/main_900.txt exactly - this is what the evaluator relies on."""
     assert [row["window_id"] for row in rows] == read_ids(DATASET / "splits/main_900.txt")
 
 
@@ -95,6 +129,15 @@ def test_gap_indices_are_unique_and_ordered_within_each_window(rows):
         assert salient_indices == list(range(len(salient_indices)))
 
 
+def test_gap_reason_carries_no_annotator_model_identity(rows):
+    import re
+    tag = re.compile(r"^\[(gemma|GLM|Qwen)\]")
+    for row in rows:
+        for gap in row["gaps"]:
+            for segment in gap["gap_reason"].split(" | "):
+                assert not tag.match(segment.strip()), (row["window_id"], gap["gap_idx"])
+
+
 def test_the_payload_relates_to_the_v1_index_exactly_as_documented(rows):
     """Gap set identical; the validation==1 evidence subset matches v1 exactly
     once coordinate corrections are set aside (v1 predates them and is frozen)."""
@@ -127,22 +170,14 @@ def test_published_v1_index_bytes_are_unchanged():
     )
 
 
-def test_provenance_file_matches_the_shipped_artifacts(rows):
+def test_provenance_file_matches_the_shipped_shards(rows):
     provenance = json.loads((DATASET / "PROVENANCE.json").read_text(encoding="utf-8"))
-    payload = provenance["artifacts"]["payload"]
-    assert payload["sha256"] == PAYLOAD_SHA256
-    assert payload["counts"] == EXPECTED_COUNTS
+    shards = provenance["artifacts"]["shards"]
+    for name, path in SHARDS.items():
+        assert shards[name]["sha256"] == SHARD_SHA256[name]
+    assert provenance["artifacts"]["counts"] == EXPECTED_COUNTS
     assert provenance["artifacts"]["v1_index"]["sha256"] == hashlib.sha256(
         (DATASET / "annotations/remember_900_annotations.jsonl").read_bytes()).hexdigest()
     assert provenance["artifacts"]["split"]["sha256"] == hashlib.sha256(
         (DATASET / "splits/main_900.txt").read_bytes()).hexdigest()
     assert (DATASET.parent / provenance["builder"]).is_file()
-
-
-def test_gap_reason_carries_no_annotator_model_identity(rows):
-    import re
-    tag = re.compile(r"^\[(gemma|GLM|Qwen)\]")
-    for row in rows:
-        for gap in row["gaps"]:
-            for segment in gap["gap_reason"].split(" | "):
-                assert not tag.match(segment.strip()), (row["window_id"], gap["gap_idx"])

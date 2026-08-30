@@ -2,12 +2,29 @@
 
 This directory publishes two views of the same 900-window release.
 
-## `remember_900.jsonl.gz` — the self-contained benchmark (canonical)
+## The self-contained benchmark (canonical)
 
-One gzipped JSONL file, one JSON object per line, in the exact order of
-`splits/main_900.txt`. Every record carries everything an evaluation needs, so
-no research tree, no upstream corpus download, and no sentence splitter is
-required to use it:
+Two gzipped JSONL files, one per conversational domain, together holding all
+900 windows in the exact order of `splits/main_900.txt`:
+
+| file | domain | windows |
+|---|---|---|
+| `remember_900_chitchat.jsonl.gz` | LoCoMo + RealTalk (casual conversation) | 300 |
+| `remember_900_workplace.jsonl.gz` | EverMemBench (professional conversation) | 600 |
+
+The split follows the underlying source corpora, not an arbitrary cut: each
+record's own `source`/`domain` field still names its corpus
+(`evermembench`/`locomo`/`realtalk`) unchanged. The two-file split exists so
+each file stays well under GitHub's recommended file-size warning, and so a
+consumer who only wants one conversational register doesn't have to download
+the other. `remember_900_chitchat.jsonl.gz`'s windows precede
+`remember_900_workplace.jsonl.gz`'s in `splits/main_900.txt`, so loading the
+two files in filename (alphabetical) order and concatenating reconstructs the
+canonical order exactly — `evaluation/evaluate.py --benchmark dataset` does
+this automatically.
+
+Every record carries everything an evaluation needs, so no research tree, no
+upstream corpus download, and no sentence splitter is required to use it:
 
 | field | meaning |
 |---|---|
@@ -73,8 +90,8 @@ vote counts, and votes. `schema.json` and `metadata.json` describe and hash it.
 Its denominators remain 900 / 1,498 / 4,135.
 
 Use the v1 index when you want to inspect annotation outcomes without
-redistributing corpus content. Use `remember_900.jsonl.gz` when you want to run
-or evaluate a system.
+redistributing corpus content. Use the two `remember_900_*.jsonl.gz` shards
+when you want to run or evaluate a system.
 
 ## What is redistributed
 
@@ -128,8 +145,12 @@ is the join that produced it.
 ```python
 import gzip, json
 
-with gzip.open("dataset/remember_900.jsonl.gz", "rt", encoding="utf-8") as handle:
-    rows = [json.loads(line) for line in handle if line.strip()]
+def read_shard(path):
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle if line.strip()]
+
+rows = (read_shard("dataset/remember_900_chitchat.jsonl.gz")
+        + read_shard("dataset/remember_900_workplace.jsonl.gz"))
 
 assert len(rows) == 900
 print(rows[0]["window_id"], len(rows[0]["history"]), len(rows[0]["gaps"]))

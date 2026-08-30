@@ -59,10 +59,15 @@ def _tiny_dataset(root: Path) -> Path:
                                 "status": "resolve", "validation": 1, "vote_count": 2,
                                 "votes": {"gemma": 1, "GLM": 1, "Qwen": 0}}]}],
         }
+    # Both windows are evermembench (workplace); the chit-chat shard ships
+    # empty here since these mutation tests never need chit-chat content.
     with gzip.GzipFile(filename="", mode="wb", mtime=0,
-                       fileobj=(dataset / "remember_900.jsonl.gz").open("wb")) as handle:
+                       fileobj=(dataset / "remember_900_workplace.jsonl.gz").open("wb")) as handle:
         handle.write("".join(json.dumps(payload(window_id), ensure_ascii=False) + "\n"
                              for window_id in ("E_U0000", "E_U0001")).encode("utf-8"))
+    with gzip.GzipFile(filename="", mode="wb", mtime=0,
+                       fileobj=(dataset / "remember_900_chitchat.jsonl.gz").open("wb")) as handle:
+        pass
 
     sys.path.insert(0, str(ROOT / "benchmark/src"))
     from remember_benchmark.release import _schema
@@ -89,13 +94,13 @@ def _payload_failures(root: Path) -> str:
     return "\n".join(validator.scan_release(root)["leakage"]["failures"])
 
 
-def _read_payload(dataset: Path) -> list[dict]:
-    with gzip.open(dataset / "remember_900.jsonl.gz", "rt", encoding="utf-8") as handle:
+def _read_payload(dataset: Path, shard: str = "workplace") -> list[dict]:
+    with gzip.open(dataset / f"remember_900_{shard}.jsonl.gz", "rt", encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
 
 
-def _write_payload(dataset: Path, rows: list[dict]) -> None:
-    with gzip.open(dataset / "remember_900.jsonl.gz", "wt", encoding="utf-8") as handle:
+def _write_payload(dataset: Path, rows: list[dict], shard: str = "workplace") -> None:
+    with gzip.open(dataset / f"remember_900_{shard}.jsonl.gz", "wt", encoding="utf-8") as handle:
         handle.write("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows))
 
 def test_release_layout_dataset_and_source_scans_are_clean():
@@ -404,9 +409,10 @@ def test_payload_integrity_failures_are_precise(tmp_path, mutation, message):
 
 def test_a_corrupt_or_missing_payload_is_reported(tmp_path):
     dataset = _tiny_dataset(tmp_path)
-    (dataset / "remember_900.jsonl.gz").write_bytes(b"not gzip at all")
+    workplace = dataset / "remember_900_workplace.jsonl.gz"
+    workplace.write_bytes(b"not gzip at all")
     assert "unreadable benchmark payload" in _payload_failures(tmp_path)
-    (dataset / "remember_900.jsonl.gz").unlink()
+    workplace.unlink()
     assert "missing benchmark payload" in _payload_failures(tmp_path)
 
 
@@ -415,8 +421,23 @@ def test_the_checked_in_payload_has_the_released_population():
     assert summary["dataset"]["payload"]["counts"] == {
         "windows": 900, "gaps": 1498, "evidence_candidates": 8450,
         "evidence_validated": 4135, "salient_utterances": 7245}
+    assert set(summary["dataset"]["payload"]["shards"]) == {
+        "remember_900_chitchat.jsonl.gz", "remember_900_workplace.jsonl.gz"}
     assert summary["dataset"]["index"]["counts"] == {
         "windows": 900, "gaps": 1498, "evidence": 4135}
+
+
+def test_domain_shards_split_evermembench_from_locomo_and_realtalk():
+    dataset = ROOT / "dataset"
+    with gzip.open(dataset / "remember_900_workplace.jsonl.gz", "rt", encoding="utf-8") as handle:
+        workplace = [json.loads(line) for line in handle if line.strip()]
+    with gzip.open(dataset / "remember_900_chitchat.jsonl.gz", "rt", encoding="utf-8") as handle:
+        chitchat = [json.loads(line) for line in handle if line.strip()]
+    assert len(workplace) == 600 and all(row["source"] == "evermembench" for row in workplace)
+    assert len(chitchat) == 300 and all(row["source"] in ("locomo", "realtalk") for row in chitchat)
+    ids = [line.strip() for line in (dataset / "splits/main_900.txt").read_text().splitlines()
+          if line.strip()]
+    assert [row["window_id"] for row in chitchat] + [row["window_id"] for row in workplace] == ids
 
 
 def test_payload_counts_are_enforced_for_a_canonical_sized_split(tmp_path):

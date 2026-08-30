@@ -1,8 +1,15 @@
-"""Build the single self-contained ReMEMber benchmark payload.
+"""Build the self-contained ReMEMber benchmark payload, split by domain.
 
 This is the join that defines the published benchmark. It is kept in the
 repository so the artifact is reproducible and its rulings are auditable; it is
 not part of the evaluation runtime and nothing imports it.
+
+The benchmark ships as two files, one per conversational domain -
+`remember_900_chitchat.jsonl.gz` (LoCoMo + RealTalk) and
+`remember_900_workplace.jsonl.gz` (EverMemBench) - rather than one, so each
+stays comfortably under GitHub's recommended file-size warning. Each record's
+own `source`/`domain` field is unchanged (still evermembench/locomo/realtalk);
+only which file it lands in depends on the two-way grouping.
 
 Inputs are supplied on the command line. The published payload was built from
 these exact bytes:
@@ -55,6 +62,16 @@ _EMOJI_RE = re.compile("[" "\U0001F600-\U0001F64F" "\U0001F300-\U0001F5FF" "\U00
     "\U0001FA70-\U0001FAFF" "\U00002702-\U000027B0" "\U000024C2-\U0001F251" "]+", flags=re.UNICODE)
 
 SOURCE_BY_PREFIX = {"E": "evermembench", "L": "locomo", "R": "realtalk"}
+
+# Two conversational domains, not three source corpora: EverMemBench is
+# workplace dialogue; LoCoMo and RealTalk are both casual chit-chat. The split
+# file groups windows into contiguous L, R, E blocks, so writing the chit-chat
+# shard first and the workplace shard second (alphabetical filename order)
+# reconstructs the exact split order when the two are loaded together -
+# verified by a test, not relied on as a silent assumption.
+DOMAIN_GROUP = {"evermembench": "workplace", "locomo": "chitchat", "realtalk": "chitchat"}
+SHARD_FILENAME = {"chitchat": "remember_900_chitchat.jsonl.gz",
+                  "workplace": "remember_900_workplace.jsonl.gz"}
 
 
 def remove_emojis(text):
@@ -116,7 +133,7 @@ def read_jsonl(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    for name in ("source", "rcv", "salient", "split", "out"):
+    for name in ("source", "rcv", "salient", "split", "out-dir"):
         ap.add_argument(f"--{name}", required=True)
     args = ap.parse_args()
 
@@ -221,17 +238,23 @@ def main():
             "salient_utterances": salient, "gaps": gaps,
         })
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.GzipFile(filename="", mode="wb", fileobj=out.open("wb"), mtime=0, compresslevel=9) as gz:
-        for record in records:
-            gz.write(json.dumps(record, ensure_ascii=False, sort_keys=True,
-                                separators=(",", ":")).encode("utf-8"))
-            gz.write(b"\n")
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    shard_stats = {}
+    for group_name, filename in SHARD_FILENAME.items():
+        shard_records = [r for r in records if DOMAIN_GROUP[r["source"]] == group_name]
+        out = out_dir / filename
+        with gzip.GzipFile(filename="", mode="wb", fileobj=out.open("wb"), mtime=0, compresslevel=9) as gz:
+            for record in shard_records:
+                gz.write(json.dumps(record, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode("utf-8"))
+                gz.write(b"\n")
+        shard_stats[group_name] = {"path": filename, "windows": len(shard_records),
+                                   "bytes": out.stat().st_size}
     print(json.dumps({
-        "counts": stats, "gaps_excluded_empty_target": excluded_empty_target,
+        "counts": stats, "shards": shard_stats,
+        "gaps_excluded_empty_target": excluded_empty_target,
         "source_ids_shifted": shifted, "source_ids_not_matching_recorded_text": unresolved,
-        "bytes": out.stat().st_size,
     }, indent=2))
 
 

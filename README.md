@@ -27,9 +27,10 @@ This is the official github repository for "Don't Scroll Back: Missing-Evidence 
 
 ---
 
-- [`dataset/`](dataset/README.md): the 900-window benchmark. `remember_900.jsonl.gz`
-  is self-contained — dialogue, gold gaps, resolved evidence, and salient
-  utterances all live in the record, so nothing else has to be downloaded.
+- [`dataset/`](dataset/README.md): the 900-window benchmark, split into two
+  self-contained domain shards (chit-chat, workplace) — dialogue, gold gaps,
+  evidence, and salient utterances all live in the record, so nothing else has
+  to be downloaded.
 - [`evaluation/`](evaluation/README.md): `evaluate.py`, the whole evaluator in one file.
 - [`remember/`](remember/README.md): the end-to-end ReMEMber method.
 - [`benchmark/`](benchmark/README.md): the eight-stage annotation pipeline.
@@ -50,7 +51,7 @@ Predictions are one JSON object per line with `window_id`, `summary`, and
 ```bash
 export MY_JUDGE_KEY=...
 python evaluation/evaluate.py \
-  --benchmark dataset/remember_900.jsonl.gz \
+  --benchmark dataset \
   --predictions runs/my_system.jsonl \
   --output-dir runs/my_system_scores \
   --provider openai --base-url https://your-endpoint/v1 --api-key-env MY_JUDGE_KEY

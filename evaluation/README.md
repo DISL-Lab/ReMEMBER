@@ -16,14 +16,22 @@ run the judge locally.
 
 ## Inputs
 
-**Benchmark** — the published payload, or any file in the same v2 record shape:
+**Benchmark** — a v2-shaped file, or a directory of them:
 
 ```bash
---benchmark dataset/remember_900.jsonl.gz     # or an uncompressed .jsonl
+--benchmark dataset                                    # both domain shards together (900 windows)
+--benchmark dataset/remember_900_workplace.jsonl.gz     # one shard only
+--benchmark my_predictions.jsonl                        # or a standalone uncompressed .jsonl
 ```
 
-A run over anything other than the exact canonical 900 windows requires
-`--allow-partial`.
+The released benchmark ships as two files by conversational domain -
+`remember_900_chitchat.jsonl.gz` (LoCoMo + RealTalk, 300 windows) and
+`remember_900_workplace.jsonl.gz` (EverMemBench, 600 windows) - so each stays
+well under GitHub's file-size warning threshold. Pointing `--benchmark` at
+`dataset` (or any directory) loads every `.jsonl`/`.jsonl.gz` file inside it, in
+filename order, and treats them as one benchmark; for the shipped shards that
+reconstructs the exact canonical 900-window order. A run over anything other
+than the exact canonical 900 windows requires `--allow-partial`.
 
 **Predictions** — one JSON object per line:
 
@@ -52,7 +60,7 @@ nothing is chosen for you:
 
 ```bash
 python evaluation/evaluate.py \
-  --benchmark dataset/remember_900.jsonl.gz \
+  --benchmark dataset \
   --predictions runs/my_system.jsonl \
   --output-dir runs/my_system_scores \
   --provider vllm --gpu-devices 0,1 --tensor-parallel-size 2
@@ -63,7 +71,7 @@ OpenAI-compatible endpoint:
 ```bash
 export MY_JUDGE_KEY=...
 python evaluation/evaluate.py \
-  --benchmark dataset/remember_900.jsonl.gz \
+  --benchmark dataset \
   --predictions runs/my_system.jsonl \
   --output-dir runs/my_system_scores \
   --provider openai --base-url https://your-endpoint/v1 --api-key-env MY_JUDGE_KEY

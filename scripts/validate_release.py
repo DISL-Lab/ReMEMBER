@@ -35,12 +35,18 @@ FORBIDDEN_DATA_KEYS = {
     "reasoning", "raw_output", "speaker", "speakers", "time", "timestamp", "media",
     "media_url", "url", "urls",
 }
-# The one text-bearing payload. It is the only `.gz` the release may carry.
-CANONICAL_PAYLOAD = Path("remember_900.jsonl.gz")
+# The two text-bearing payload shards, one per conversational domain. These
+# are the only `.gz` files the release may carry. Sorted order is the
+# canonical concatenation order: chitchat's L+R windows precede workplace's E
+# windows in the split file, so alphabetical (chitchat < workplace) matches -
+# `_payload_integrity()` verifies this order directly rather than assuming it.
+CANONICAL_PAYLOAD_SHARDS = (
+    Path("remember_900_chitchat.jsonl.gz"), Path("remember_900_workplace.jsonl.gz"),
+)
 ALLOWED_DATASET_FILES = frozenset({
     Path("README.md"), Path("DATASET_CARD.md"), Path("schema.json"), Path("metadata.json"),
     Path("annotations/remember_900_annotations.jsonl"), Path("splits/main_900.txt"),
-    Path("PROVENANCE.json"), CANONICAL_PAYLOAD,
+    Path("PROVENANCE.json"), *CANONICAL_PAYLOAD_SHARDS,
 })
 # Text keys are legitimate in the v2 payload; these structural keys never are.
 FORBIDDEN_PAYLOAD_KEYS = {
@@ -53,8 +59,8 @@ EXPECTED_PAYLOAD_COUNTS = {
 
 
 def _is_canonical_payload(relative: Path) -> bool:
-    """True only for the exact released payload path, relative to the release root."""
-    return relative == Path("dataset") / CANONICAL_PAYLOAD
+    """True only for the exact released payload shard paths, relative to the release root."""
+    return relative in {Path("dataset") / name for name in CANONICAL_PAYLOAD_SHARDS}
 
 
 def _sha256(path: Path) -> str:
@@ -154,37 +160,48 @@ def _payload_scan(root: Path) -> list[str]:
             for key in _keys(value):
                 if key in FORBIDDEN_DATA_KEYS:
                     failures.append(f"forbidden dataset key {key}: {path.relative_to(root)}")
-    failures.extend(_payload_integrity(dataset / CANONICAL_PAYLOAD, root))
+    failures.extend(_payload_integrity(
+        [dataset / name for name in CANONICAL_PAYLOAD_SHARDS], root))
     return failures
 
 
-def _payload_integrity(path: Path, root: Path) -> list[str]:
-    """Parse the compressed payload and check structure, order, and counts."""
-    if not path.is_file():
-        return [f"missing benchmark payload: {path.relative_to(root)}"]
-    relative = path.relative_to(root)
-    split_path = root / "dataset/splits/main_900.txt"
-    try:
-        with gzip.open(path, "rt", encoding="utf-8") as handle:
-            rows = [json.loads(line) for line in handle if line.strip()]
-    except (OSError, gzip.BadGzipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return [f"unreadable benchmark payload: {relative}: {exc}"]
+def _payload_integrity(paths: Sequence[Path], root: Path) -> list[str]:
+    """Parse the compressed payload shards and check structure, order, and counts.
 
+    `paths` is the canonical concatenation order; the combined window order
+    must match the split file exactly.
+    """
+    missing = [path for path in paths if not path.is_file()]
+    if missing:
+        return [f"missing benchmark payload: {path.relative_to(root)}" for path in missing]
+
+    rows: list[dict[str, Any]] = []
+    for path in paths:
+        relative = path.relative_to(root)
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as handle:
+                shard_rows = [json.loads(line) for line in handle if line.strip()]
+        except (OSError, gzip.BadGzipFile, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return [f"unreadable benchmark payload: {relative}: {exc}"]
+        rows.extend(shard_rows)
+
+    combined = ", ".join(str(path.relative_to(root)) for path in paths)
     failures: list[str] = []
     for row in rows:
         for key in _keys(row):
             if key in FORBIDDEN_PAYLOAD_KEYS:
-                failures.append(f"forbidden payload key {key}: {relative}")
+                failures.append(f"forbidden payload key {key}: {combined}")
                 break
         if failures:
             break
+    split_path = root / "dataset/splits/main_900.txt"
     try:
         split_ids = [line.strip() for line in split_path.read_text(encoding="utf-8").splitlines()
                      if line.strip()]
     except OSError as exc:
         return failures + [f"unreadable split: {exc}"]
     if [row.get("window_id") for row in rows] != split_ids:
-        failures.append(f"payload window order does not match the ordered split: {relative}")
+        failures.append(f"payload window order does not match the ordered split: {combined}")
     all_evidence = [item for row in rows for gap in row.get("gaps") or []
                     for item in gap.get("evidence") or []]
     counts = {
@@ -195,15 +212,15 @@ def _payload_integrity(path: Path, root: Path) -> list[str]:
         "salient_utterances": sum(len(row.get("salient_utterances") or []) for row in rows),
     }
     if len(split_ids) == EXPECTED_PAYLOAD_COUNTS["windows"] and counts != EXPECTED_PAYLOAD_COUNTS:
-        failures.append(f"payload counts {counts} != {EXPECTED_PAYLOAD_COUNTS}: {relative}")
+        failures.append(f"payload counts {counts} != {EXPECTED_PAYLOAD_COUNTS}: {combined}")
     for index, row in enumerate(rows):
         if row.get("schema_version") != "2.0":
-            failures.append(f"payload row {index} has an unsupported schema version: {relative}")
+            failures.append(f"payload row {index} has an unsupported schema version: {combined}")
             break
         if not (row.get("history") and row.get("turns")):
-            failures.append(f"payload row {index} carries no dialogue text: {relative}")
+            failures.append(f"payload row {index} carries no dialogue text: {combined}")
             break
-    failures.extend(_payload_content_scan(rows, relative))
+    failures.extend(_payload_content_scan(rows, Path(combined)))
     return failures
 
 
@@ -329,7 +346,8 @@ def _dataset_summary(root: Path) -> dict[str, Any]:
     schema = root / "dataset/schema.json"
     metadata = root / "dataset/metadata.json"
     split = root / "dataset/splits/main_900.txt"
-    for path in (annotation, schema, metadata, split, root / "dataset" / CANONICAL_PAYLOAD):
+    payload_paths = [root / "dataset" / name for name in CANONICAL_PAYLOAD_SHARDS]
+    for path in (annotation, schema, metadata, split, *payload_paths):
         if path.is_symlink():
             raise ValueError(f"dataset artifact must not be a symlink: {path.relative_to(root)}")
     rows = [json.loads(line) for line in annotation.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -348,11 +366,16 @@ def _dataset_summary(root: Path) -> dict[str, Any]:
         raise ValueError("dataset metadata counts do not match recomputed counts")
     index_hashes = {"annotations": _sha256(annotation), "schema": _sha256(schema),
                     "metadata": _sha256(metadata), "split": _sha256(split)}
-    payload = root / "dataset" / CANONICAL_PAYLOAD
+    payload_rows: list[dict[str, Any]] = []
+    payload_shard_hashes: dict[str, str] = {}
+    for path in payload_paths:
+        if not path.is_file():
+            continue
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            payload_rows.extend(json.loads(line) for line in handle if line.strip())
+        payload_shard_hashes[path.name] = _sha256(path)
     payload_counts: dict[str, int] = {}
-    if payload.is_file():
-        with gzip.open(payload, "rt", encoding="utf-8") as handle:
-            payload_rows = [json.loads(line) for line in handle if line.strip()]
+    if payload_rows:
         payload_evidence = [item for row in payload_rows for gap in row.get("gaps") or []
                             for item in gap.get("evidence") or []]
         payload_counts = {
@@ -367,9 +390,8 @@ def _dataset_summary(root: Path) -> dict[str, Any]:
         # `counts`/`hashes` stay at the top level for the v1 compatibility contract.
         "counts": counts, "hashes": index_hashes,
         "index": {"counts": counts, "hashes": index_hashes},
-        "payload": {"counts": payload_counts,
-                    "sha256": _sha256(payload) if payload.is_file() else None,
-                    "path": str(CANONICAL_PAYLOAD)},
+        "payload": {"counts": payload_counts, "shards": payload_shard_hashes,
+                    "paths": [str(name) for name in CANONICAL_PAYLOAD_SHARDS]},
     }
 
 
