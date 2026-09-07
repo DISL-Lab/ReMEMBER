@@ -44,7 +44,11 @@ def test_chunking_retains_whole_turn_overlap_without_duplicate_chunk_ids():
     assert len({chunk.chunk_id for chunk in chunks}) == len(chunks)
 
 
-def test_chunking_drops_excess_overlap_before_adding_a_fitting_turn():
+def test_overlap_tail_is_bounded_only_by_overlap_tokens():
+    """The paper implementation retains an overlap tail up to overlap_tokens
+    on its own, without also checking it against max_tokens together with the
+    turn that triggered the new chunk. A chunk can therefore end up over
+    max_tokens when the retained tail plus that turn together exceed it."""
     history = (
         Turn("1", "A", "one two"),
         Turn("2", "B", "three four"),
@@ -53,8 +57,8 @@ def test_chunking_drops_excess_overlap_before_adding_a_fitting_turn():
 
     chunks = build_token_chunks(history, WordCounter(), max_tokens=10, overlap_tokens=8)
 
-    assert [(chunk.start_turn_index, chunk.end_turn_index) for chunk in chunks] == [(0, 1), (1, 2)]
-    assert all(WordCounter().count(chunk.text) <= 10 for chunk in chunks)
+    assert [(chunk.start_turn_index, chunk.end_turn_index) for chunk in chunks] == [(0, 1), (0, 2)]
+    assert WordCounter().count(chunks[1].text) == 12
 
 
 def test_hybrid_retrieval_fuses_sparse_and_dense_candidates_per_gap():
@@ -62,6 +66,12 @@ def test_hybrid_retrieval_fuses_sparse_and_dense_candidates_per_gap():
         Chunk(0, 0, 0, (), "cedar"),
         Chunk(1, 4, 4, (), "budget cedar"),
         Chunk(2, 9, 9, (), "budget"),
+        # Decoy chunks keep "cedar"/"budget" document frequency below half the
+        # corpus so BM25 idf stays positive (a 3-document corpus makes both
+        # terms exactly as common as rare, which floors rank_bm25's idf to a
+        # degenerate epsilon value and is not representative of a real corpus).
+        Chunk(3, 14, 14, (), "weather report today"),
+        Chunk(4, 19, 19, (), "team standup notes"),
     )
     gap = PredictedGap(
         index=7,

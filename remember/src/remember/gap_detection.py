@@ -123,7 +123,17 @@ def _parse_json_lenient(text: str) -> Any:
         candidate = candidate.strip()
         if not candidate:
             continue
-        for fixed in (candidate, re.sub(r",(\s*[}\]])", r"\1", candidate)):
+        fixes = [candidate, re.sub(r",(\s*[}\]])", r"\1", candidate)]
+        if candidate.count("{") > candidate.count("}") or candidate.count("[") > candidate.count("]"):
+            # A max_tokens cutoff can truncate the response mid-object; closing
+            # the dangling brackets often still recovers valid JSON.
+            closed = (
+                candidate
+                + ("]" * max(0, candidate.count("[") - candidate.count("]")))
+                + ("}" * max(0, candidate.count("{") - candidate.count("}")))
+            )
+            fixes.append(re.sub(r",(\s*[}\]])", r"\1", closed))
+        for fixed in fixes:
             try:
                 return json.loads(fixed)
             except json.JSONDecodeError:

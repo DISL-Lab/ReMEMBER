@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import dataclass, replace
 from typing import Mapping, Sequence
 
+import numpy as np
+
 from .config import DENSE_QUERY_PREFIX
+from .gap_detection import MODEL_TAG_RE
 from .schemas import Embedder, PredictedGap, RetrievedChunk, TokenCounter, Turn, Window
 
 
@@ -104,6 +106,18 @@ def _split_turn(turn: Turn) -> list[str]:
     return units
 
 
+def _clean_gap_reason(value: str, max_chars: int = 520) -> str:
+    """gap_reason facets get the stronger cleanup applied when gaps are
+    parsed elsewhere (strip bracketed model tags and "|" separators, cap
+    length), since a gap_reason reaching facet construction here may not
+    have passed through that path (e.g. cached/pre-parsed gaps)."""
+    text = MODEL_TAG_RE.sub(" ", _normalize_space(value)).replace("|", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        return text[:max_chars].rsplit(" ", 1)[0]
+    return text
+
+
 def _facets(gaps: Sequence[PredictedGap]) -> list[_Facet]:
     facets: list[_Facet] = []
     for gap in gaps:
@@ -115,7 +129,7 @@ def _facets(gaps: Sequence[PredictedGap]) -> list[_Facet]:
         seen: set[str] = set()
         facet_index = 0
         for facet_type, value in raw:
-            text = _normalize_space(value)
+            text = _clean_gap_reason(value) if facet_type == "gap_reason" else _normalize_space(value)
             key = text.lower()
             if not key or key in seen:
                 continue
@@ -125,17 +139,29 @@ def _facets(gaps: Sequence[PredictedGap]) -> list[_Facet]:
     return facets
 
 
-def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
-    if len(left) != len(right):
-        raise ValueError("embedder returned vectors with inconsistent dimensions")
-    dot = sum(float(a) * float(b) for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(float(value) ** 2 for value in left))
-    right_norm = math.sqrt(sum(float(value) ** 2 for value in right))
-    return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
+def _score_matrix(rows: Sequence[Sequence[float]], columns: Sequence[Sequence[float]]) -> np.ndarray:
+    """All-pairs dot product as a single matrix product, matching the paper's
+    `cand_embs @ facet_embs.T`: a per-pair Python-loop dot product is not
+    bit-identical to a batched matmul in float32, so near-tied candidates can
+    rank differently. This is a plain dot product, not a re-normalized
+    cosine similarity: the paper's embedders already L2-normalize their
+    output, and re-dividing by each vector's norm here would only
+    reintroduce float16-rounding noise from that normalization (norms end up
+    near-but-not-exactly 1.0), which can flip near-tied rankings that the
+    paper's own un-normalized dot product does not."""
+    row_matrix = np.asarray(rows, dtype=np.float32)
+    column_matrix = np.asarray(columns, dtype=np.float32)
+    return row_matrix @ column_matrix.T
 
 
-def _stable_chunk_id(value: int | str) -> tuple[str, str]:
-    return type(value).__name__, str(value)
+def _stable_chunk_id(value: int | str) -> tuple[int, int | str]:
+    """Sort key that orders chunk_id numerically when it is an int (matching
+    the paper's plain `sorted(candidates_by_chunk)` over integer chunk ids),
+    falling back to string order only across mixed types. Stringifying an
+    int chunk_id here (e.g. via `str(value)`) would sort it lexicographically
+    ("111" before "9") and reorder candidates into different embedding
+    batches than the paper's run, which can shift near-tied facet scores."""
+    return (0, value) if isinstance(value, int) else (1, str(value))
 
 
 def _candidates(
@@ -225,6 +251,11 @@ def _facet_turn_pack(
         raise ValueError("embedder must return one vector per candidate")
     if len(facet_vectors) != len(facets):
         raise ValueError("embedder must return one vector per facet")
+    score_matrix = (
+        _score_matrix(candidate_vectors, facet_vectors)
+        if candidates and facets
+        else np.zeros((len(candidates), len(facets)), dtype=np.float32)
+    )
 
     ranked_by_facet: list[list[_Event]] = []
     for facet_index, facet in enumerate(facets):
@@ -238,7 +269,7 @@ def _facet_turn_pack(
                 gap_index=facet.gap_index,
                 facet_index=facet.facet_index,
                 facet_type=facet.facet_type,
-                score=_cosine(candidate_vectors[candidate_index], facet_vectors[facet_index]),
+                score=float(score_matrix[candidate_index, facet_index]),
                 chunk_rank=gap_ranks[candidate.chunk_id],
                 facet_rank=0,
             ))
@@ -258,6 +289,8 @@ def _facet_turn_pack(
     row_by_turn: dict[tuple[int, str], int] = {}
     seen_text: set[str] = set()
     fallbacks = 0
+    used = 0
+    sep_tokens = counter.count("\n\n")
     max_depth = max((len(ranked) for ranked in ranked_by_facet), default=0)
     for depth in range(max_depth):
         for ranked in ranked_by_facet:
@@ -278,14 +311,20 @@ def _facet_turn_pack(
                 )
                 continue
 
+            # Budget is tracked as a running sum of each piece's own token count
+            # (paper implementation), not by re-tokenizing the joined text on
+            # every step: cl100k_base's BPE merges across a "\n\n" boundary
+            # differently than counting pieces separately, so re-tokenizing the
+            # whole prospective string can accept a different last item near
+            # the cap.
             text = candidate.turn_text
             pack_unit = "source_turn"
-            prospective = "\n\n".join([*(row.text for row in rows), text])
-            if counter.count(prospective) > budget_tokens:
+            extra = counter.count(text) + (sep_tokens if rows else 0)
+            if used + extra > budget_tokens:
                 text = candidate.unit_text
                 pack_unit = "sentence_fallback"
-                prospective = "\n\n".join([*(row.text for row in rows), text])
-                if counter.count(prospective) > budget_tokens:
+                extra = counter.count(text) + (sep_tokens if rows else 0)
+                if used + extra > budget_tokens:
                     continue
                 fallbacks += 1
             text_key = _normalize_space(text).lower()
@@ -305,6 +344,7 @@ def _facet_turn_pack(
                 pack_unit=pack_unit,
                 token_count=counter.count(text),
             ))
+            used += extra
 
     text = "\n\n".join(row.text for row in rows)
     return MemoryResult(

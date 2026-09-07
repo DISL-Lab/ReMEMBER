@@ -19,8 +19,8 @@ from .inference import (
     DeterministicFakeGenerator,
     DeterministicHashEmbedder,
     OpenAICompatibleGenerator,
-    SentenceTransformerEmbedder,
     VLLMGenerator,
+    build_dense_embedder,
 )
 from .io import _fsync_parent, atomic_write_jsonl, load_windows
 from .pipeline import SCHEMA_VERSION, _read_prompt, _run_window
@@ -221,10 +221,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.provider == "openai"
             else VLLMGenerator(gpu_devices=args.gpu_devices)
         )
-        embedder = SentenceTransformerEmbedder(
+        embedder = build_dense_embedder(
             config.dense_model,
             device=args.dense_device,
             gpu_devices=args.gpu_devices,
+            batch_size=config.dense_batch_size,
         )
     runtime_config = {
         "provider": args.provider,

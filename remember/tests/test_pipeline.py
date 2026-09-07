@@ -98,9 +98,9 @@ def test_dense_query_instruction_prefix_is_applied_only_to_queries_and_facets(mo
     sparse_queries = []
     original_bm25 = __import__("remember.retrieval", fromlist=["_bm25_scores"])._bm25_scores
 
-    def record_bm25(query, chunks):
+    def record_bm25(bm25, query):
         sparse_queries.append(query)
-        return original_bm25(query, chunks)
+        return original_bm25(bm25, query)
 
     monkeypatch.setattr("remember.retrieval._bm25_scores", record_bm25)
     generator = RecordingGenerator([json.dumps({"gaps": [{

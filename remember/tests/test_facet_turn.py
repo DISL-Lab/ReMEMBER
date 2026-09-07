@@ -143,7 +143,12 @@ def test_default_paper_budget_never_exceeds_1024_tokens():
     assert len(memory.items) == 1
 
 
-def test_cap_is_checked_against_the_final_joined_memory_text():
+def test_cap_is_checked_against_a_running_sum_of_each_pieces_own_count():
+    """The paper implementation tracks the budget as a running sum of each
+    selected piece's own token count plus a separator count, rather than by
+    re-tokenizing the whole joined memory text on every step. A non-additive
+    counter can then let the final joined text exceed the nominal cap, because
+    the accept/reject decision never re-tokenizes the join as a whole."""
     window = Window(
         "non-additive-cap",
         history=(
@@ -159,7 +164,14 @@ def test_cap_is_checked_against_the_final_joined_memory_text():
         window, (gap,), retrieved, ConstantEmbedder(), NonAdditiveCounter(), budget_tokens=8
     )
 
-    assert memory.token_count <= 8
+    assert [item.text for item in memory.items] == [
+        "[1] A: query evidence.",
+        "[2] B: reason evidence.",
+    ]
+    # Each piece counts 4 on its own and the running sum never exceeds the
+    # budget (4, then 4+4=8), even though re-tokenizing the final join scores
+    # 10 (NonAdditiveCounter adds +2 once real content surrounds a "\n\n").
+    assert memory.token_count == 10
 
 
 def test_each_gap_scores_only_chunks_retrieved_for_that_gap():

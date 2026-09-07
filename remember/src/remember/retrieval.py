@@ -1,11 +1,12 @@
-"""Dependency-light chunking and deterministic hybrid retrieval."""
+"""Chunking and deterministic hybrid retrieval (BM25 via rank_bm25, as used for the paper)."""
 
 from __future__ import annotations
 
-import math
 import re
-from collections import Counter
 from typing import Hashable, Sequence
+
+import numpy as np
+from rank_bm25 import BM25Okapi
 
 from .schemas import Chunk, Embedder, PredictedGap, RetrievedChunk, TokenCounter, Turn
 
@@ -55,14 +56,15 @@ def build_token_chunks(
     for index, token_count in enumerate(turn_lengths):
         if current_indexes and current_tokens + token_count > max_tokens:
             publish()
+            # The overlap tail is bounded only by overlap_tokens (paper
+            # implementation): it does not also check the incoming turn
+            # against max_tokens here, so retained tail size is independent
+            # of how large the next turn is.
             retained: list[int] = []
             retained_tokens = 0
             for previous in reversed(current_indexes):
                 previous_tokens = turn_lengths[previous]
-                if (
-                    retained_tokens + previous_tokens > overlap_tokens
-                    or retained_tokens + previous_tokens + token_count > max_tokens
-                ):
+                if retained_tokens + previous_tokens > overlap_tokens:
                     break
                 retained.insert(0, previous)
                 retained_tokens += previous_tokens
@@ -100,44 +102,13 @@ def reciprocal_rank_fuse(
     ]
 
 
-def _bm25_scores(query: str, chunks: Sequence[Chunk]) -> list[float]:
-    documents = [_tokens(chunk.text) for chunk in chunks]
-    query_tokens = _tokens(query)
-    if not documents:
-        return []
-    document_frequency: Counter[str] = Counter()
-    for document in documents:
-        document_frequency.update(set(document))
-    average_length = sum(len(document) for document in documents) / len(documents)
-    scores: list[float] = []
-    for document in documents:
-        frequencies = Counter(document)
-        score = 0.0
-        for term in query_tokens:
-            frequency = frequencies.get(term, 0)
-            if not frequency:
-                continue
-            # Standard Robertson/Sparck Jones BM25 IDF; no optional package needed.
-            idf = math.log(1 + (len(documents) - document_frequency[term] + 0.5) /
-                           (document_frequency[term] + 0.5))
-            denominator = frequency + 1.5 * (1 - 0.75 + 0.75 * len(document) / average_length)
-            score += idf * frequency * 2.5 / denominator
-        scores.append(score)
-    return scores
+def _bm25_index(chunks: Sequence[Chunk]) -> BM25Okapi:
+    """Build the ATIRE-variant BM25 index the paper implementation used."""
+    return BM25Okapi([_tokens(chunk.text) for chunk in chunks])
 
 
-def _dot(left: Sequence[float], right: Sequence[float]) -> float:
-    if len(left) != len(right):
-        raise ValueError("embedder returned vectors with inconsistent dimensions")
-    return sum(float(a) * float(b) for a, b in zip(left, right))
-
-
-def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
-    left_norm = math.sqrt(_dot(left, left))
-    right_norm = math.sqrt(_dot(right, right))
-    if not left_norm or not right_norm:
-        return 0.0
-    return _dot(left, right) / (left_norm * right_norm)
+def _bm25_scores(bm25: BM25Okapi, query: str) -> list[float]:
+    return list(bm25.get_scores(_tokens(query)))
 
 
 def _rank(scores: Sequence[float], chunks: Sequence[Chunk], limit: int) -> list[int]:
@@ -198,14 +169,32 @@ def _hybrid_retrieve(
     document_vectors = list(embedder.encode([chunk.text for chunk in chunks]))
     if len(document_vectors) != len(chunks):
         raise ValueError("embedder must return one vector per chunk")
+    # All gap queries for a window are embedded in a single batch (matching
+    # the paper implementation): a transformer encoder's batched matmuls are
+    # not bit-identical to encoding the same text one query at a time, so
+    # batching queries individually here would silently drift from the paper.
+    query_vectors_all = list(query_embedder.encode(list(query_texts)))
+    if len(query_vectors_all) != len(query_texts):
+        raise ValueError("embedder must return one vector per query")
+    # Cosine scores are computed as a single matrix-vector product (matching
+    # the paper's `doc_matrix @ query_vector`), not a per-document Python loop:
+    # float32 summation order differs enough between the two that near-tied
+    # candidates can rank differently.
+    # A plain dot product (matching the paper's `doc_matrix @ query_vector`),
+    # not a re-normalized cosine similarity: the paper's embedders already
+    # L2-normalize their output, and re-dividing by each vector's norm here
+    # would only reintroduce float16-rounding noise from that normalization
+    # (norms end up near-but-not-exactly 1.0), which can flip near-tied
+    # rankings that the paper's own un-normalized dot product does not.
+    document_matrix = np.asarray(document_vectors, dtype=np.float32)
+    query_matrix = np.asarray(query_vectors_all, dtype=np.float32)
     candidate_limit = min(len(chunks), 4 * top_k)
+    bm25 = _bm25_index(chunks)
     results: dict[int, list[RetrievedChunk]] = {}
-    for gap, query in zip(gaps, query_texts):
-        sparse_order = _rank(_bm25_scores(query, chunks), chunks, candidate_limit)
-        query_vectors = list(query_embedder.encode([query]))
-        if len(query_vectors) != 1:
-            raise ValueError("embedder must return one vector per query")
-        dense_scores = [_cosine(query_vectors[0], vector) for vector in document_vectors]
+    for gap_index, (gap, query) in enumerate(zip(gaps, query_texts)):
+        sparse_order = _rank(_bm25_scores(bm25, query), chunks, candidate_limit)
+        query_vector = query_matrix[gap_index]
+        dense_scores = (document_matrix @ query_vector).tolist()
         dense_order = _rank(dense_scores, chunks, candidate_limit)
         fused = reciprocal_rank_fuse(
             [chunks[index].chunk_id for index in sparse_order],

@@ -6,6 +6,7 @@ import hashlib
 import gc
 import json
 import os
+from pathlib import Path
 from typing import Protocol, Sequence
 
 
@@ -210,6 +211,100 @@ class SentenceTransformerEmbedder:
             normalize_embeddings=True,
             show_progress_bar=False,
         )
+
+
+def _local_hf_snapshot(model_id: str) -> str | None:
+    """Resolve a cached local snapshot directory for `model_id`, if any."""
+    home = Path(os.environ.get("HF_HOME") or (Path.home() / ".cache" / "huggingface"))
+    repo_dir = home / "hub" / ("models--" + model_id.replace("/", "--"))
+    refs_main = repo_dir / "refs" / "main"
+    if refs_main.exists():
+        sha = refs_main.read_text(encoding="utf-8").strip()
+        snapshot = repo_dir / "snapshots" / sha
+        if snapshot.exists():
+            return str(snapshot)
+    snapshots = repo_dir / "snapshots"
+    if snapshots.exists():
+        dirs = sorted(p for p in snapshots.iterdir() if p.is_dir())
+        if dirs:
+            return str(dirs[-1])
+    return None
+
+
+class AutoModelDenseEncoder:
+    """The paper's dense encoder: raw transformers + manual last-token pooling.
+
+    Qwen3-Embedding-0.6B ships with a sentence-transformers-compatible config,
+    but the paper runs used this transformers-only path directly (last-token
+    pooling + L2 normalization), so it is kept as the primary encoder rather
+    than an approximation. Prefers a locally cached snapshot when available.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        device: str = "cpu",
+        gpu_devices: str | None = None,
+        batch_size: int = 128,
+    ) -> None:
+        if gpu_devices is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = gpu_devices
+        self.model_id = model
+        self.device = device
+        self.batch_size = batch_size
+        self._tokenizer = None
+        self._encoder = None
+
+    def _load(self) -> None:
+        import torch
+        from transformers import AutoModel, AutoTokenizer
+
+        snapshot = _local_hf_snapshot(self.model_id) or self.model_id
+        device = self.device
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        dtype = torch.float16 if device.startswith("cuda") else torch.float32
+        self._tokenizer = AutoTokenizer.from_pretrained(snapshot, trust_remote_code=True)
+        self._encoder = AutoModel.from_pretrained(
+            snapshot, trust_remote_code=True, torch_dtype=dtype,
+        ).to(device).eval()
+        self.device = device
+
+    def encode(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
+        import torch
+
+        if self._encoder is None:
+            self._load()
+        texts = list(texts)
+        if not texts:
+            return []
+        outputs = []
+        with torch.inference_mode():
+            for start in range(0, len(texts), self.batch_size):
+                batch = texts[start : start + self.batch_size]
+                tokens = self._tokenizer(
+                    batch, padding=True, truncation=True, max_length=8192, return_tensors="pt",
+                ).to(self.device)
+                hidden = self._encoder(**tokens).last_hidden_state
+                lengths = tokens["attention_mask"].sum(dim=1) - 1
+                pooled = hidden[torch.arange(hidden.shape[0], device=self.device), lengths]
+                pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
+                outputs.append(pooled.float().cpu().numpy())
+        import numpy as np
+
+        return np.concatenate(outputs, axis=0)
+
+
+def build_dense_embedder(
+    model: str, *, device: str = "cpu", gpu_devices: str | None = None, batch_size: int = 128,
+) -> "AutoModelDenseEncoder | SentenceTransformerEmbedder":
+    """Prefer the paper's transformers-only encoder when the model is cached
+    locally (matching the paper run's loading order); fall back to
+    sentence-transformers otherwise."""
+    if _local_hf_snapshot(model) is not None:
+        return AutoModelDenseEncoder(model, device=device, gpu_devices=gpu_devices, batch_size=batch_size)
+    return SentenceTransformerEmbedder(model, device=device, gpu_devices=gpu_devices, batch_size=batch_size)
 
 
 class WhitespaceTokenCounter:

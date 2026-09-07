@@ -32,6 +32,10 @@ class RememberConfig:
     summary_max_tokens: int = 1024
     token_encoding: str = "cl100k_base"
     dense_query_prefix: str = DENSE_QUERY_PREFIX
+    # A transformer encoder's batched matmuls are not bit-identical to the
+    # same texts split across a different batch grouping, so this must match
+    # the paper run's batch size to reproduce its exact near-tied rankings.
+    dense_batch_size: int = 96
 
     def __post_init__(self) -> None:
         for name in ("gap_model", "summary_model", "dense_model"):
@@ -44,7 +48,7 @@ class RememberConfig:
             raise ConfigError("max_gaps must be in 1..8")
         for name in (
             "chunk_tokens", "memory_budget_tokens", "top_k", "rrf_k",
-            "gap_max_tokens", "summary_max_tokens",
+            "gap_max_tokens", "summary_max_tokens", "dense_batch_size",
         ):
             if getattr(self, name) <= 0:
                 raise ConfigError(f"{name} must be positive")
