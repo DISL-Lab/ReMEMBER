@@ -13,7 +13,7 @@ from .gap_detection import _keywords, parse_predicted_gaps
 from .inference import Cl100kTokenCounter, TextGenerator
 from .retrieval import _hybrid_retrieve, build_token_chunks
 from .schemas import Embedder, PredictedGap, RetrievedChunk, TokenCounter, Window
-from .summarization import _summarize, render_window
+from .summarization import _parse_summary, _summarize, render_window
 
 
 SCHEMA_VERSION = "1.1"
@@ -204,3 +204,148 @@ def _run_window(
         timing_seconds={key: round(value, 6) for key, value in timings.items()},
         effective_config=asdict(config),
     )
+
+
+def run_windows(
+    windows: Sequence[Window],
+    config: RememberConfig,
+    generator: TextGenerator,
+    embedder: Embedder,
+    *,
+    counter: TokenCounter | None = None,
+    memory_only: bool = False,
+    batch_size: int | None = None,
+    gap_prompt: str | None = None,
+    summary_prompt_with_memory: str | None = None,
+    summary_prompt_without_memory: str | None = None,
+) -> list[RunResult]:
+    """Run a whole set of windows with gap detection and summarization each
+    submitted as `generation_batch_size`-sized batches (matching the paper
+    run), rather than one window at a time.
+
+    `run_window` stays the exact single-window brief interface; this is the
+    entry point the CLI uses so that a local vLLM generator sees the same
+    batch composition the paper's runs did. Retrieval and packing are
+    unaffected by this and stay per-window (batching them together across
+    windows is not something the paper implementation does either).
+    """
+    counter = counter or Cl100kTokenCounter()
+    batch_size = max(1, batch_size if batch_size is not None else config.generation_batch_size)
+    gap_prompt = gap_prompt if gap_prompt is not None else _read_prompt("gap_detection.txt")
+    summary_prompt_with_memory = (
+        summary_prompt_with_memory
+        if summary_prompt_with_memory is not None
+        else _read_prompt("summary_with_memory.txt")
+    )
+    summary_prompt_without_memory = (
+        summary_prompt_without_memory
+        if summary_prompt_without_memory is not None
+        else _read_prompt("summary_window_only.txt")
+    )
+
+    windows = list(windows)
+    n = len(windows)
+    if n == 0:
+        return []
+
+    gap_timings = [0.0] * n
+    gap_prompts = [
+        gap_prompt.replace("{max_gaps}", str(config.max_gaps)).replace(
+            "{window}", render_window(window, indexed=True)
+        )
+        for window in windows
+    ]
+    raw_gaps: list[str] = [""] * n
+    for start in range(0, n, batch_size):
+        batch = gap_prompts[start : start + batch_size]
+        started = perf_counter()
+        outputs = generator.generate_batch(
+            batch, model=config.gap_model, temperature=config.gap_temperature,
+            max_tokens=config.gap_max_tokens,
+        )
+        per_window = (perf_counter() - started) / len(batch)
+        for offset, output in enumerate(outputs):
+            raw_gaps[start + offset] = output
+            gap_timings[start + offset] = per_window
+
+    gaps_per_window = [
+        tuple(parse_predicted_gaps(raw, window, config.max_gaps))
+        for raw, window in zip(raw_gaps, windows)
+    ]
+
+    chunks_per_window = []
+    retrieval_per_window = []
+    memory_per_window = []
+    query_embedder_per_window = []
+    retrieval_packing_timings = [(0.0, 0.0)] * n
+    for i, (window, gaps) in enumerate(zip(windows, gaps_per_window)):
+        started = perf_counter()
+        chunks = build_token_chunks(
+            window.history, counter, max_tokens=config.chunk_tokens, overlap_tokens=config.overlap_tokens,
+        )
+        query_embedder = _PrefixedEmbedder(embedder, config.dense_query_prefix)
+        retrieved_lists = _hybrid_retrieve(
+            gaps, chunks, embedder,
+            query_texts=[_faithful_query(window, gap) for gap in gaps],
+            query_embedder=query_embedder, top_k=config.top_k, rrf_k=config.rrf_k,
+        )
+        retrieval = {index: tuple(items) for index, items in retrieved_lists.items()}
+        retrieval_elapsed = perf_counter() - started
+
+        started = perf_counter()
+        memory = _facet_turn_pack(
+            window, gaps, retrieval, embedder, query_embedder, counter, config.memory_budget_tokens,
+        )
+        packing_elapsed = perf_counter() - started
+
+        chunks_per_window.append(chunks)
+        retrieval_per_window.append(retrieval)
+        memory_per_window.append(memory)
+        query_embedder_per_window.append(query_embedder)
+        retrieval_packing_timings[i] = (retrieval_elapsed, packing_elapsed)
+
+    summary_timings = [0.0] * n
+    summaries: list[str] = [""] * n
+    if not memory_only:
+        summary_prompts = []
+        for window, memory in zip(windows, memory_per_window):
+            template = summary_prompt_with_memory if memory.text.strip() else summary_prompt_without_memory
+            values = {"window": render_window(window), "memory": memory.text}
+            summary_prompts.append(template.format(**values))
+        for start in range(0, n, batch_size):
+            batch = summary_prompts[start : start + batch_size]
+            started = perf_counter()
+            outputs = generator.generate_batch(
+                batch, model=config.summary_model, temperature=config.summary_temperature,
+                max_tokens=config.summary_max_tokens,
+            )
+            per_window = (perf_counter() - started) / len(batch)
+            for offset, output in enumerate(outputs):
+                summaries[start + offset] = _parse_summary(output)
+                summary_timings[start + offset] = per_window
+
+    results: list[RunResult] = []
+    for i, window in enumerate(windows):
+        retrieval_elapsed, packing_elapsed = retrieval_packing_timings[i]
+        timings = {
+            "gap_detection": gap_timings[i],
+            "retrieval": retrieval_elapsed,
+            "packing": packing_elapsed,
+            "summarization": summary_timings[i],
+        }
+        timings["total"] = sum(timings.values())
+        results.append(RunResult(
+            window_id=window.window_id,
+            predicted_gaps=gaps_per_window[i],
+            retrieval=retrieval_per_window[i],
+            memory=memory_per_window[i],
+            summary=summaries[i],
+            token_counts={
+                "history": counter.count("\n".join(chunk.text for chunk in chunks_per_window[i])),
+                "window": counter.count(render_window(window)),
+                "memory": memory_per_window[i].token_count,
+            },
+            timing_seconds={key: round(value, 6) for key, value in timings.items()},
+            effective_config=asdict(config),
+        ))
+    return results

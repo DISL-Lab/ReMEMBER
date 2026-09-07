@@ -3,7 +3,7 @@ import inspect
 
 from remember.config import RememberConfig
 from remember.facet_turn import MemoryResult, facet_turn_pack
-from remember.pipeline import _read_prompt, _run_window, run_window
+from remember.pipeline import _read_prompt, _run_window, run_window, run_windows
 from remember.retrieval import hybrid_retrieve
 from remember.schemas import Turn, Window
 from remember.summarization import summarize
@@ -27,6 +27,27 @@ class RecordingGenerator:
             "max_tokens": max_tokens,
         })
         return next(self.outputs)
+
+
+class BatchRecordingGenerator:
+    """Records the size of each generate_batch call so tests can assert on
+    batch grouping; never calls the single-prompt generate()."""
+
+    def __init__(self, gap_output, summary_output):
+        self.gap_output = gap_output
+        self.summary_output = summary_output
+        self.batch_sizes: list[int] = []
+
+    def generate(self, prompt, *, model=None, temperature=0.0, max_tokens=768):
+        raise AssertionError("run_windows must use generate_batch, not generate")
+
+    def generate_batch(self, prompts, *, model=None, temperature=0.0, max_tokens=768):
+        self.batch_sizes.append(len(prompts))
+        # Gap prompts contain the gap-detection instructions; summary prompts
+        # contain the summary instructions.
+        is_summary = "Reinforced Dialogue Summary" in prompts[0] or "Dialogue Summary" in prompts[0]
+        output = self.summary_output if is_summary else self.gap_output
+        return [output for _ in prompts]
 
 
 class KeywordEmbedder:
@@ -91,6 +112,43 @@ def test_run_window_executes_gap_retrieval_pack_and_summary(monkeypatch):
     ]
     assert result.effective_config["dense_model"] == "fixture/dense-model"
     assert result.effective_config["token_encoding"] == "cl100k_base"
+
+
+def test_run_windows_batches_gap_detection_and_summarization_across_windows(monkeypatch):
+    """Matches the paper run: gap detection and summarization are each
+    submitted as generation_batch_size-sized batches spanning multiple
+    windows, not one generate() call per window."""
+    monkeypatch.setattr("remember.inference.Cl100kTokenCounter.count", WordCounter.count)
+    windows = [
+        Window(
+            f"E_fixture_{i}",
+            history=(
+                Turn("09:00", "Ava", "The cedar plan uses a fixed budget."),
+                Turn("09:01", "Bo", "The launch owner is Cy."),
+            ),
+            turns=(Turn("10:00", "Ava", "Use it for the launch."),),
+        )
+        for i in range(5)
+    ]
+    gap_output = json.dumps({"gaps": [{
+        "utterance_index": 0,
+        "quote": "Use it for the launch.",
+        "gap_reason": "The cedar plan is not identified.",
+        "evidence_need_query": "retrieve earlier dialogue identifying the cedar plan",
+        "keywords": ["cedar", "launch"],
+    }]})
+    generator = BatchRecordingGenerator(gap_output, '{"summary":"Fixture summary."}')
+    config = RememberConfig(
+        chunk_tokens=32, overlap_tokens=0, memory_budget_tokens=1024, top_k=2,
+        generation_batch_size=2,
+    )
+
+    results = run_windows(windows, config, generator, KeywordEmbedder())
+
+    assert [r.window_id for r in results] == [w.window_id for w in windows]
+    assert all(r.summary == "Fixture summary." for r in results)
+    # 5 windows batched by 2 -> [2, 2, 1] for gap detection, same for summary.
+    assert generator.batch_sizes == [2, 2, 1, 2, 2, 1]
 
 
 def test_dense_query_instruction_prefix_is_applied_only_to_queries_and_facets(monkeypatch):

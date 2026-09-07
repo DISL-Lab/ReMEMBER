@@ -296,3 +296,38 @@ def test_vllm_model_switch_tears_down_old_engine_before_loading_new(monkeypatch)
     generator.generate("second", model="model-b")
 
     assert events == ["load:model-a", "shutdown:model-a", "load:model-b"]
+
+
+def test_vllm_generate_batch_submits_one_call_for_the_whole_batch(monkeypatch):
+    """Matches the paper run: a batched llm.generate() call is not the same
+    computation as one prompt at a time, so generate_batch must submit every
+    prompt in a single call rather than looping."""
+    generate_calls = []
+
+    class FakeTokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[0]["content"]
+
+    class FakeLLM:
+        def __init__(self, *, model, **kwargs):
+            del model, kwargs
+
+        def get_tokenizer(self):
+            return FakeTokenizer()
+
+        def generate(self, prompts, params, use_tqdm=False):
+            del params, use_tqdm
+            generate_calls.append(list(prompts))
+            return [
+                types.SimpleNamespace(outputs=[types.SimpleNamespace(text=f"out-{p}")])
+                for p in prompts
+            ]
+
+    fake_vllm = types.SimpleNamespace(LLM=FakeLLM, SamplingParams=lambda **kwargs: kwargs)
+    monkeypatch.setitem(sys.modules, "vllm", fake_vllm)
+    generator = VLLMGenerator()
+
+    outputs = generator.generate_batch(["a", "b", "c"], model="model-a")
+
+    assert generate_calls == [["a", "b", "c"]]
+    assert outputs == ["out-a", "out-b", "out-c"]

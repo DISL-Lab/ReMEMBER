@@ -20,6 +20,26 @@ class TextGenerator(Protocol):
         max_tokens: int = 768,
     ) -> str: ...
 
+    def generate_batch(
+        self,
+        prompts: Sequence[str],
+        *,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 768,
+    ) -> list[str]: ...
+
+
+def _generate_batch_sequentially(
+    generator: "TextGenerator", prompts: Sequence[str], *, model, temperature, max_tokens,
+) -> list[str]:
+    """Fallback for adapters with no real batched call to share (numerics
+    aside, a remote API or the deterministic fake gain nothing from one)."""
+    return [
+        generator.generate(prompt, model=model, temperature=temperature, max_tokens=max_tokens)
+        for prompt in prompts
+    ]
+
 
 class DeterministicFakeGenerator:
     """Offline smoke adapter; its output is fixed and contains no source text."""
@@ -42,6 +62,18 @@ class DeterministicFakeGenerator:
             "evidence_need_query": "retrieve earlier dialogue identifying the referenced context",
             "keywords": ["context"],
         }]})
+
+    def generate_batch(
+        self,
+        prompts: Sequence[str],
+        *,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 768,
+    ) -> list[str]:
+        return _generate_batch_sequentially(
+            self, prompts, model=model, temperature=temperature, max_tokens=max_tokens
+        )
 
 
 class DeterministicHashEmbedder:
@@ -106,6 +138,18 @@ class OpenAICompatibleGenerator:
         message = response.choices[0].message
         return message.content or getattr(message, "reasoning_content", None) or ""
 
+    def generate_batch(
+        self,
+        prompts: Sequence[str],
+        *,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 768,
+    ) -> list[str]:
+        return _generate_batch_sequentially(
+            self, prompts, model=model, temperature=temperature, max_tokens=max_tokens
+        )
+
 
 class VLLMGenerator:
     """Lazy in-process vLLM adapter with device visibility set before import."""
@@ -116,11 +160,13 @@ class VLLMGenerator:
         gpu_devices: str | None = None,
         max_model_len: int | None = None,
         gpu_memory_utilization: float = 0.9,
+        max_num_seqs: int | None = None,
     ) -> None:
         if gpu_devices is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = gpu_devices
         self.max_model_len = max_model_len
         self.gpu_memory_utilization = gpu_memory_utilization
+        self.max_num_seqs = max_num_seqs
         self._llm = None
         self._tokenizer = None
         self._model: str | None = None
@@ -135,6 +181,8 @@ class VLLMGenerator:
         kwargs = {"model": model, "gpu_memory_utilization": self.gpu_memory_utilization}
         if self.max_model_len is not None:
             kwargs["max_model_len"] = self.max_model_len
+        if self.max_num_seqs is not None:
+            kwargs["max_num_seqs"] = self.max_num_seqs
         self._llm = LLM(**kwargs)
         self._tokenizer = self._llm.get_tokenizer()
         self._model = model
@@ -162,23 +210,47 @@ class VLLMGenerator:
         temperature: float = 0.0,
         max_tokens: int = 768,
     ) -> str:
+        [output] = self.generate_batch(
+            [prompt], model=model, temperature=temperature, max_tokens=max_tokens
+        )
+        return output
+
+    def generate_batch(
+        self,
+        prompts: Sequence[str],
+        *,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 768,
+    ) -> list[str]:
+        """Render and submit the whole batch as one vLLM call (matching the
+        paper implementation): a transformer's batched attention/CUDA-graph
+        path is not bit-identical to submitting the same prompt alone, so
+        generating one prompt at a time here would drift from the paper run,
+        and for greedy decoding that drift compounds token-by-token into an
+        entirely different completion rather than a small numeric wobble."""
         if not model:
             raise ValueError("model is required")
+        if not prompts:
+            return []
         llm, tokenizer = self._load(model)
         from vllm import SamplingParams
 
-        messages = [{"role": "user", "content": prompt}]
         options = {"tokenize": False, "add_generation_prompt": True}
-        try:
-            rendered = tokenizer.apply_chat_template(messages, **options, enable_thinking=False)
-        except TypeError:
-            rendered = tokenizer.apply_chat_template(messages, **options)
-        [output] = llm.generate(
-            [rendered],
+        rendered = []
+        for prompt in prompts:
+            messages = [{"role": "user", "content": prompt}]
+            try:
+                text = tokenizer.apply_chat_template(messages, **options, enable_thinking=False)
+            except TypeError:
+                text = tokenizer.apply_chat_template(messages, **options)
+            rendered.append(text)
+        outputs = llm.generate(
+            rendered,
             SamplingParams(max_tokens=max_tokens, temperature=temperature),
             use_tqdm=False,
         )
-        return output.outputs[0].text
+        return [output.outputs[0].text for output in outputs]
 
 
 class SentenceTransformerEmbedder:

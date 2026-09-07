@@ -36,6 +36,13 @@ class RememberConfig:
     # same texts split across a different batch grouping, so this must match
     # the paper run's batch size to reproduce its exact near-tied rankings.
     dense_batch_size: int = 96
+    # Gap detection and summarization are each submitted to the generator as
+    # batches of this many windows (matching the paper run), not one window
+    # at a time: a local LLM's batched decoding is not bit-identical to
+    # generating the same prompt alone, and for greedy autoregressive
+    # decoding that drift compounds into a different completion, not just a
+    # small numeric wobble.
+    generation_batch_size: int = 96
 
     def __post_init__(self) -> None:
         for name in ("gap_model", "summary_model", "dense_model"):
@@ -49,6 +56,7 @@ class RememberConfig:
         for name in (
             "chunk_tokens", "memory_budget_tokens", "top_k", "rrf_k",
             "gap_max_tokens", "summary_max_tokens", "dense_batch_size",
+            "generation_batch_size",
         ):
             if getattr(self, name) <= 0:
                 raise ConfigError(f"{name} must be positive")

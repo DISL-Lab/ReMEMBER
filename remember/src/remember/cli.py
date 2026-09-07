@@ -23,7 +23,7 @@ from .inference import (
     build_dense_embedder,
 )
 from .io import _fsync_parent, atomic_write_jsonl, load_windows
-from .pipeline import SCHEMA_VERSION, _read_prompt, _run_window
+from .pipeline import SCHEMA_VERSION, _read_prompt, run_windows
 from .schemas import Embedder, TokenCounter
 
 
@@ -137,22 +137,30 @@ def run_file(
 
     rows_by_id = {row["window_id"]: row for row in existing}
     ordered_ids: list[str] = []
+    pending_windows = []
     for window in load_windows(input_path):
         if window.window_id in ordered_ids:
             raise ValueError(f"input contains duplicate window_id: {window.window_id}")
         ordered_ids.append(window.window_id)
         if window.window_id not in rows_by_id:
-            rows_by_id[window.window_id] = _run_window(
-                window,
-                config,
-                generator,
-                embedder,
-                counter=counter or Cl100kTokenCounter(),
-                memory_only=memory_only,
-                gap_prompt=_read_prompt("gap_detection.txt"),
-                summary_prompt_with_memory=_read_prompt("summary_with_memory.txt"),
-                summary_prompt_without_memory=_read_prompt("summary_window_only.txt"),
-            ).to_dict()
+            pending_windows.append(window)
+
+    # Gap detection and summarization are submitted as generation_batch_size
+    # batches across all pending windows here (matching the paper run),
+    # rather than one window at a time; see run_windows for why that
+    # matters for a local generator's exact output.
+    for result in run_windows(
+        pending_windows,
+        config,
+        generator,
+        embedder,
+        counter=counter or Cl100kTokenCounter(),
+        memory_only=memory_only,
+        gap_prompt=_read_prompt("gap_detection.txt"),
+        summary_prompt_with_memory=_read_prompt("summary_with_memory.txt"),
+        summary_prompt_without_memory=_read_prompt("summary_window_only.txt"),
+    ):
+        rows_by_id[result.window_id] = result.to_dict()
     rows = [rows_by_id[window_id] for window_id in ordered_ids]
     atomic_write_jsonl(output_path, rows)
     _atomic_write_json(manifest_path, {
@@ -195,6 +203,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--api-key-env", default="OPENAI_API_KEY")
     run.add_argument("--gpu-devices")
     run.add_argument("--dense-device", default="cpu")
+    run.add_argument("--max-model-len", type=int, default=16384)
+    run.add_argument("--gpu-memory-utilization", type=float, default=0.3)
     run.add_argument("--resume", action="store_true")
     run.add_argument("--overwrite", action="store_true")
     run.add_argument("--memory-only", action="store_true")
@@ -219,7 +229,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         generator = (
             OpenAICompatibleGenerator(base_url=args.base_url, api_key_env=args.api_key_env)
             if args.provider == "openai"
-            else VLLMGenerator(gpu_devices=args.gpu_devices)
+            else VLLMGenerator(
+                gpu_devices=args.gpu_devices,
+                max_model_len=args.max_model_len,
+                gpu_memory_utilization=args.gpu_memory_utilization,
+                # Matches the paper run, where max_num_seqs and the
+                # generation batch size are the same configured value.
+                max_num_seqs=config.generation_batch_size,
+            )
         )
         embedder = build_dense_embedder(
             config.dense_model,
@@ -233,6 +250,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "api_key_env": args.api_key_env,
         "dense_device": args.dense_device,
         "gpu_devices": args.gpu_devices,
+        "max_model_len": args.max_model_len,
+        "gpu_memory_utilization": args.gpu_memory_utilization,
         "generator_adapter": type(generator).__name__,
         "embedder_adapter": type(embedder).__name__,
         "counter_adapter": type(counter).__name__,
