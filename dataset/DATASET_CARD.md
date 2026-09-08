@@ -99,6 +99,18 @@ License. That license does not cover the upstream corpora.
 - `annotations/remember_900_annotations.jsonl` redistributes no upstream text.
 - `remember_900_chitchat.jsonl.gz`, `remember_900_workplace_1.jsonl.gz`, and
   `remember_900_workplace_2.jsonl.gz` **do** redistribute upstream dialogue
-  verbatim, under authorization covering EverMemBench, LoCoMo, and RealTalk.
-  Redistributing any of them further means redistributing those corpora's
-  text, subject to their terms.
+  verbatim. Redistributing any of them further means redistributing those
+  corpora's text, subject to each source's own terms:
+
+  | source | terms |
+  |---|---|
+  | EverMemBench | [Apache-2.0](https://huggingface.co/datasets/EverMind-AI/EverMemBench-Dynamic) |
+  | LoCoMo | [CC BY-NC 4.0](https://github.com/snap-research/locomo/blob/main/LICENSE.txt) — non-commercial, attribution required |
+  | RealTalk | no public license file; redistributed here under the authors' direct permission, conditioned on citation |
+
+  RealTalk in particular ships no LICENSE and no stated public redistribution
+  terms in its own repository — its authors' condition for reuse, given
+  directly, is citation, not an open license. It contains real participants'
+  dialogue collected under a study consent process. See
+  [`README.md`](README.md#citations) for the citations both LoCoMo and RealTalk
+  ask for.

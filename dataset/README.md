@@ -104,11 +104,49 @@ this release adds on top is the annotation layer: gap and evidence coordinates,
 adjudication votes, salient utterances, and the sentences those coordinates
 resolve to.
 
-The payload is redistributed under authorization covering EverMemBench, LoCoMo,
-and RealTalk. The project-authored annotations are provided under the
-repository's MIT License; that license does not itself grant rights to the
-upstream corpora. If you redistribute this payload further, you are
-redistributing those corpora's text, so review their terms first.
+The project-authored annotations (gap/evidence coordinates, adjudication
+votes, salient utterances) are provided under the repository's MIT License;
+that license does not itself grant rights to the upstream dialogue text,
+which each source corpus governs separately:
+
+| source | upstream license | terms |
+|---|---|---|
+| EverMemBench (`workplace_1`, `workplace_2`) | [Apache-2.0](https://huggingface.co/datasets/EverMind-AI/EverMemBench-Dynamic) | permissive; redistribution and commercial use are permitted |
+| LoCoMo (part of `chitchat`) | [CC BY-NC 4.0](https://github.com/snap-research/locomo/blob/main/LICENSE.txt) | non-commercial use only, with attribution — cite [Maharana et al., 2024](#citations) |
+| RealTalk (part of `chitchat`) | no public license file | redistributed here with the authors' direct permission, conditioned on citation — cite [Lee et al., 2025](#citations) |
+
+RealTalk's own repository (<https://github.com/danny911kr/REALTALK>) ships no
+LICENSE file and states no public redistribution terms; the authors' stated
+condition for reuse, communicated directly, is citation. It contains
+real participants' dialogue (and, in the authors' own repository, photos and
+demographic details) collected under a study consent process, not a public
+open-data license — treat it accordingly if you redistribute this payload
+further, beyond what citation covers.
+
+### Citations
+
+```bibtex
+@inproceedings{maharana2024evaluating,
+  title     = {Evaluating Very Long-Term Conversational Memory of {LLM} Agents},
+  author    = {Maharana, Adyasha and Lee, Dong-Ho and Tulyakov, Sergey and Bansal, Mohit and Barbieri, Francesco and Fang, Yuwei},
+  booktitle = {Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  pages     = {13851--13870},
+  year      = {2024},
+  address   = {Bangkok, Thailand},
+  publisher = {Association for Computational Linguistics}
+}
+
+@article{lee2025realtalk,
+  title   = {Realtalk: A 21-day real-world dataset for long-term conversation},
+  author  = {Lee, Dong-Ho and Maharana, Adyasha and Pujara, Jay and Ren, Xiang and Barbieri, Francesco},
+  journal = {arXiv preprint arXiv:2502.13270},
+  year    = {2025}
+}
+```
+
+EverMemBench is Apache-2.0 and does not require citation, but see its
+[dataset card](https://huggingface.co/datasets/EverMind-AI/EverMemBench-Dynamic)
+if you want one.
 
 The v1 index in `annotations/` remains the option that carries no corpus text at
 all.
