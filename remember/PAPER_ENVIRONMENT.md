@@ -1,20 +1,43 @@
 # Paper reproduction environment
 
 This is a snapshot of the exact environment used to verify the release
-package against the paper's archived outputs (retrieval/packing: 100% of
-1079 windows byte-identical; gap detection alone, batched exactly like the
-paper run: 86% of 1079 windows byte-identical — see commit history for how
-these numbers were produced).
+package against the paper's archived outputs. Retrieval/packing: 100% of
+1079 windows byte-identical. Gap detection alone, batched exactly like the
+paper run (same server, same physical GPU index, same 96-window batch
+grouping): **100% of 1079 windows byte-identical on a quiet GPU** — see
+"Run on a quiet GPU" below, and the commit history for how these numbers
+were produced.
 
 It is captured here so a from-scratch setup can at least rule out **package
 version drift** as a source of divergence. It does **not** make results
 bit-identical on a different machine: GPU driver/CUDA/cuDNN build, and
 vLLM/torch.compile's JIT-compiled kernels (auto-tuned per detected hardware,
 cached under `~/.cache/vllm/torch_compile_cache/`), are tied to the specific
-GPU and cannot be transplanted from this snapshot. See the project's
-`REMEMBER_RUN_SPEC.md`-style notes / conversation history for the full
-discussion of why exact reproduction across machines is not achievable even
-with identical package versions.
+GPU and cannot be transplanted from this snapshot.
+
+## Run on a quiet GPU
+
+Gap detection first reproduced only 86% of windows exactly. That run shared
+the server with other jobs saturating the *other* GPUs (one at 99% util, one
+holding 89GB); this one's own GPU showed idle in `nvidia-smi` beforehand.
+Re-running the identical batch (same GPU index, same 96-window batches, same
+generator config) on an otherwise fully idle server reproduced **100%** of
+windows exactly.
+
+vLLM's continuous-batching scheduler is not just sensitive to what else is
+in its own batch — apparently also to host-side contention (CPU scheduling
+for the async engine, PCIe/memory-bus traffic, shared power/thermal budget)
+from unrelated jobs elsewhere on the same box, even on GPUs that show 0%
+compute utilization for the process being measured. Greedy decoding
+(temperature 0) only fixes *how a token is chosen from the computed
+distribution*, not that the distribution itself is computed identically
+every time; a hairline floating-point difference in it can still flip which
+token has the highest logit, and that then compounds autoregressively into
+a fully different generation from that point on.
+
+**Practical takeaway**: for a from-scratch reproduction attempt to match
+these numbers, run it on a GPU/server with no other concurrent jobs, not
+just a GPU that individually shows 0% utilization right before you start.
 
 ## Hardware / driver (as observed on the verification server)
 
