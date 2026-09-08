@@ -1,39 +1,89 @@
 # Paper reproduction environment
 
 This is a snapshot of the exact environment used to verify the release
-package against the paper's archived outputs. Retrieval/packing: 100% of
-1079 windows byte-identical. Gap detection alone, batched exactly like the
-paper run (same server, same physical GPU index, same 96-window batch
-grouping): **100% of 1079 windows byte-identical on a quiet GPU** — see
-"Run on a quiet GPU" below, and the commit history for how these numbers
-were produced.
+package against the paper's archived outputs.
+
+- **Retrieval/packing: 100% of 1079 windows byte-identical**, and this holds
+  unconditionally — it's pure embedding/CPU computation, not affected by
+  anything below. This is the part of the release that was actually broken
+  (8 bugs, all fixed and verified; see commit history) and it now
+  reproducibles the paper's method exactly.
+- **Gap detection (LLM generation): not reliably reproducible outside this
+  exact server's compiled-kernel cache** — see below. Retrieval/packing was
+  fed the paper's own cached gap predictions for that 100% figure; this
+  section is about regenerating gap text from scratch with a local vLLM.
 
 It is captured here so a from-scratch setup can at least rule out **package
-version drift** as a source of divergence. It does **not** make results
-bit-identical on a different machine: GPU driver/CUDA/cuDNN build, and
-vLLM/torch.compile's JIT-compiled kernels (auto-tuned per detected hardware,
-cached under `~/.cache/vllm/torch_compile_cache/`), are tied to the specific
-GPU and cannot be transplanted from this snapshot.
+version drift** as a source of divergence in the parts that can be matched
+(retrieval/packing) and to document, honestly, why the LLM-generated part
+(gap text, and summaries) should not be expected to match byte-for-byte
+anywhere but here.
 
-## Run on a quiet GPU
+## Why gap-detection text isn't reproducible, in three steps
 
-Gap detection first reproduced only 86% of windows exactly. That run shared
-the server with other jobs saturating the *other* GPUs (one at 99% util, one
-holding 89GB); this one's own GPU showed idle in `nvidia-smi` beforehand.
-Re-running the identical batch (same GPU index, same 96-window batches, same
-generator config) on an otherwise fully idle server reproduced **100%** of
-windows exactly.
+1. **Busy server, reused compiled cache → 86%.** First attempt shared the
+   server with other jobs saturating the *other* GPUs (one at 99% util, one
+   holding 89GB); this run's own GPU showed idle in `nvidia-smi` beforehand,
+   but 86% of 1079 windows still matched the paper's archived gap text
+   exactly (batched identically: same GPU index, same 96-window batches).
+2. **Quiet server, same reused compiled cache → 100%.** Re-running the
+   identical batch with the whole server otherwise idle reproduced all 1079
+   windows exactly. This looked like proof that "quiet GPU" was the whole
+   story.
+3. **Quiet server, cache cleared (forced fresh `torch.compile`) → 19.6%.**
+   Moving aside `~/.cache/vllm/torch_compile_cache/<hash>/` (the compiled
+   Triton/CUDA kernels vLLM's JIT compiler had produced for this exact
+   model+config back when the paper's runs were made) and re-running forced
+   a fresh compile on the *same* GPU, same driver, same vLLM build. Result:
+   211/1079 (19.6%) exact matches. The cache — not GPU business — was doing
+   nearly all the work in steps 1–2.
 
-vLLM's continuous-batching scheduler is not just sensitive to what else is
-in its own batch — apparently also to host-side contention (CPU scheduling
-for the async engine, PCIe/memory-bus traffic, shared power/thermal budget)
-from unrelated jobs elsewhere on the same box, even on GPUs that show 0%
-compute utilization for the process being measured. Greedy decoding
-(temperature 0) only fixes *how a token is chosen from the computed
-distribution*, not that the distribution itself is computed identically
-every time; a hairline floating-point difference in it can still flip which
-token has the highest logit, and that then compounds autoregressively into
-a fully different generation from that point on.
+**Why re-compiling changes the actual output, not just speed**: `torch.compile`
+picks each operator's kernel by live-benchmarking multiple candidate
+implementations and keeping whichever measures fastest at that moment.
+Mathematically-equivalent kernels can still sum floating-point values in a
+different order, so a freshly-chosen kernel can produce a hairline-different
+result for that operator. This happens independently across dozens of fused
+operations in every transformer layer; gap detection is autoregressive, so
+the first token where any one of those hairline differences flips an argmax
+choice changes the token fed into every following step, and the completion
+diverges from there. Across 1079 windows, each generating many tokens, it
+would be surprising if *none* of them hit this — which is exactly what steps
+1–3 show happening at scale once the specific compiled kernels are gone.
+
+## This is a known, documented class of problem — not unique to this release
+
+vLLM's own docs describe exactly this mechanism and only promise
+reproducibility under narrower conditions than "same hardware, same vLLM
+version, quiet GPU":
+
+- [vLLM: Reproducibility](https://docs.vllm.ai/en/latest/usage/reproducibility/) —
+  "only provides reproducibility when it runs on the same hardware and the
+  same vLLM version," and even then only with `VLLM_ENABLE_V1_MULTIPROCESSING=0`
+  (offline, deterministic scheduling) or `VLLM_BATCH_INVARIANT=1` explicitly set.
+  Neither was set for the paper's runs.
+- [vLLM: Batch Invariance](https://docs.vllm.ai/en/latest/features/batch_invariance/) —
+  states the root cause as "batch-size dependence of reduction kernels: a
+  given prompt can be dispatched under different dynamic batch sizes,
+  causing internal reduction trees to change."
+- [vLLM issue #19491](https://github.com/vllm-project/vllm/issues/19491) — a
+  filed bug report of exactly this symptom (AsyncLLM outputs differing
+  across runs of the same script).
+- [PyTorch: Reproducibility](https://docs.pytorch.org/docs/2.13/notes/randomness.html) —
+  "Completely reproducible results are not guaranteed across PyTorch
+  releases, individual commits, or different platforms," true even with
+  identical seeds.
+
+## Practical takeaway
+
+- Trust retrieval/packing to reproduce the paper exactly, anywhere, given the
+  same predicted gaps as input (already verified: 1079/1079).
+- Do not expect a from-scratch `--provider vllm` run's gap-detection or
+  summary text to match this repository's archived numbers byte-for-byte,
+  on this server or any other — treat close-but-different generations as
+  expected, not as a sign something is broken. What should carry over is the
+  *behavior* (similar gap types found, similar summary quality), not the
+  literal text.
 
 **Practical takeaway**: for a from-scratch reproduction attempt to match
 these numbers, run it on a GPU/server with no other concurrent jobs, not
