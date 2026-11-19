@@ -4,7 +4,31 @@
 One file. It loads the published benchmark payload, renders the five canonical
 judge prompts, runs them through a provider, and reports Memory Recall (MR),
 Memory-Knowledge Faithfulness (MKF), Window-Knowledge Faithfulness (WKF),
-factuality, conciseness, and the diagnostic MR-gated MKF.
+factuality, conciseness, and MR-gated MKF.
+
+Metric definitions, for a window with annotated gaps G (|G| = number of gaps):
+
+    MR           = |{g in G : memory resolves g}| / |G|
+                   (judge decision d_g in {0, 1}; paper: Memory Recall)
+    MKF          = sum_g s_g / |G|
+                   (s_g in [0, 1]: the summary's score for gap g, judged without
+                   regard to whether memory resolved g)
+    MR-gated MKF = sum_g d_g * s_g / |G|
+                   (s_g is set to 0 for every gap that memory did not resolve,
+                   d_g = 0, and kept as is otherwise; the denominator stays
+                   |G|, the same as MKF. Windows without scored gaps are
+                   skipped in the macro average. This is "Gap Comp" in the
+                   paper's tables.)
+    WKF          = sum_u t_u / |U|     over salient utterances U
+                   (paper: Win-Comp)
+    Conciseness  = |L_gap U L_win| / |S|
+                   (S: summary sentences; L_gap: sentences cited by a fully
+                   covered MKF gap with d_g = 1, i.e. MR-gated; L_win: sentences
+                   cited by a covered salient utterance)
+
+Each metric is reported both micro (sum of numerators / sum of denominators) and
+macro (mean of the per-window ratios over windows that have items). The paper's
+tables use the macro value.
 
 It imports nothing from the research tree and nothing from the benchmark
 construction package; only the standard library plus, for canonical runs, NLTK
@@ -59,7 +83,7 @@ METRIC_DEPENDENCIES = {
     "mkf": ("mkf",),
     "wkf": ("wkf",),
     "factuality": ("factuality",),
-    "conciseness": ("mkf", "wkf"),
+    "conciseness": ("mr", "mkf", "wkf"),
     "mr_gated_mkf": ("mr", "mkf"),
 }
 _ATTEMPT_ERROR_CAP = 20
@@ -1484,6 +1508,23 @@ def _positive_lines(items: Sequence[Mapping[str, Any]] | None) -> set[str]:
     return lines
 
 
+def _mr_gated_positive_lines(mkf_entry: Mapping[str, Any] | None,
+                             decisions: Mapping[str, int]) -> set[str]:
+    """Summary lines credited by MKF, counting only gaps that memory resolved."""
+    if not mkf_entry or not mkf_entry.get("value"):
+        return set()
+    request = mkf_entry["request"]
+    id_to_index = dict(zip(request.expected_item_ids, request.payload["gap_indices"]))
+    lines: set[str] = set()
+    for item in mkf_entry["value"]:
+        index = id_to_index.get(item.get("gap_num"))
+        if index is None or decisions.get(str(index)) != 1:
+            continue
+        if item.get("score") == 1.0:
+            lines.update(item.get("line_number") or [])
+    return lines
+
+
 def _build_per_window(benchmark_rows, predictions, parsed, inference,
                       requested) -> list[dict[str, Any]]:
     per_window: list[dict[str, Any]] = []
@@ -1537,12 +1578,13 @@ def _build_per_window(benchmark_rows, predictions, parsed, inference,
             }
 
         if "conciseness" in requested:
-            covered = _positive_lines(mkf_entry["value"] if mkf_entry else None)
+            covered = _mr_gated_positive_lines(mkf_entry, record.get("mr", {}).get("decisions", {}))
             covered |= _positive_lines(wkf_entry["value"] if wkf_entry else None)
             record["conciseness"] = {
                 "numerator": len(covered),
                 "denominator": len(sentences),
-                "parse_failure": bool(record.get("mkf", {}).get("parse_failure"))
+                "parse_failure": bool(record.get("mr", {}).get("parse_failure"))
+                or bool(record.get("mkf", {}).get("parse_failure"))
                 or bool(record.get("wkf", {}).get("parse_failure")),
             }
 

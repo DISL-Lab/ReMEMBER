@@ -586,6 +586,19 @@ def test_conciseness_counts_unique_positive_lines_across_mkf_and_wkf():
     assert scores["conciseness"]["micro"]["denominator"] == 4
 
 
+def test_conciseness_credits_mkf_lines_only_for_gaps_memory_resolved():
+    from types import SimpleNamespace
+    request = SimpleNamespace(expected_item_ids=["G0", "G1"], payload={"gap_indices": [0, 3]})
+    entry = {"request": request, "value": [
+        {"gap_num": "G0", "score": 1.0, "line_number": ["1"]},
+        {"gap_num": "G1", "score": 1.0, "line_number": ["2"]},
+    ]}
+    # gap 0 resolved by memory, gap 3 not: only gap 0's sentence is credited.
+    assert ev._mr_gated_positive_lines(entry, {"0": 1, "3": 0}) == {"1"}
+    assert ev._mr_gated_positive_lines(entry, {}) == set()
+    assert ev._mr_gated_positive_lines(None, {"0": 1}) == set()
+
+
 def test_per_window_carries_length_bucket_from_tok_end():
     """E_U0001 (tok_end=9024) and L_U0002 (tok_end=17024) both fall under the
     32K edge, matching analysis_v3's `length_group_for_window`."""
@@ -627,7 +640,7 @@ def test_factuality_reports_all_nine_categories_and_phase_failures():
 
 
 def test_metric_dependency_closure():
-    assert ev.expand_metric_dependencies(["conciseness"]) == ["mkf", "wkf"]
+    assert ev.expand_metric_dependencies(["conciseness"]) == ["mr", "mkf", "wkf"]
     assert ev.expand_metric_dependencies(["mr_gated_mkf"]) == ["mr", "mkf"]
     assert ev.expand_metric_dependencies(list(ev.REPORTED_METRICS)) == list(ev.INFERENCE_METRICS)
 

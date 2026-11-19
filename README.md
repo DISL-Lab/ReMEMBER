@@ -27,12 +27,12 @@ This is the official github repository for "Don't Scroll Back: Missing-Evidence 
 
 ---
 
-- [`dataset/`](dataset/README.md): the 900-window benchmark, split into three
+- `dataset/`: the 900-window benchmark, split into three
   self-contained domain shards (chit-chat, workplace ×2) — dialogue, gold gaps,
   evidence, and salient utterances all live in the record, so nothing else has
   to be downloaded.
-- [`evaluation/`](evaluation/README.md): `evaluate.py`, the whole evaluator in one file.
-- [`remember/`](remember/README.md): the end-to-end ReMEMber method.
+- `evaluation/`: `evaluate.py`, the whole evaluator in one file.
+- `remember/`: the end-to-end ReMEMber method.
 
 ## Install
 
@@ -56,15 +56,9 @@ python evaluation/evaluate.py \
   --provider openai --base-url https://your-endpoint/v1 --api-key-env MY_JUDGE_KEY
 ```
 
-This reports MR, MKF, WKF, factuality, conciseness, and diagnostic MR-gated MKF.
+This reports MR, MKF, WKF, factuality, conciseness, and MR-gated MKF (the
+paper's Gap-Comp). The metric definitions are in the docstring at the top of
+`evaluation/evaluate.py`.
 To judge locally instead, install vLLM (`python -m pip install vllm`, not in
 `requirements.txt` because it is environment-specific) and pass
-`--provider vllm --gpu-devices 0,1`. See
-[`evaluation/README.md`](evaluation/README.md) for resume and the output
-contract.
-
-## Usage
-
-- ReMEMber method: [`remember/README.md`](remember/README.md)
-- Evaluation: [`evaluation/README.md`](evaluation/README.md)
-- Dataset: [`dataset/README.md`](dataset/README.md)
+`--provider vllm --gpu-devices 0,1`.
