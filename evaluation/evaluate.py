@@ -3,28 +3,29 @@
 
 One file. It loads the published benchmark payload, renders the five canonical
 judge prompts, runs them through a provider, and reports Memory Recall (MR),
-Memory-Knowledge Faithfulness (MKF), Window-Knowledge Faithfulness (WKF),
-factuality, conciseness, and MR-gated MKF.
+Gap-Resolution Completeness, Window Completeness, Faithfulness, and
+Conciseness.
 
 Metric definitions, for a window with annotated gaps G (|G| = number of gaps):
 
-    MR           = |{g in G : memory resolves g}| / |G|
-                   (judge decision d_g in {0, 1}; paper: Memory Recall)
-    MKF          = sum_g s_g / |G|
-                   (s_g in [0, 1]: the summary's score for gap g, judged without
-                   regard to whether memory resolved g)
-    MR-gated MKF = sum_g d_g * s_g / |G|
-                   (s_g is set to 0 for every gap that memory did not resolve,
-                   d_g = 0, and kept as is otherwise; the denominator stays
-                   |G|, the same as MKF. Windows without scored gaps are
-                   skipped in the macro average. This is "Gap Comp" in the
-                   paper's tables.)
-    WKF          = sum_u t_u / |U|     over salient utterances U
-                   (paper: Win-Comp)
+    Memory Recall (MR)
+                 = |{g in G : memory resolves g}| / |G|
+                   (judge decision d_g in {0, 1})
+    Gap-Resolution Completeness
+                 = sum_g d_g * s_g / |G|
+                   (s_g in [0, 1]: the summary's score for gap g. A gap that
+                   memory did not resolve (d_g = 0) contributes 0; the
+                   denominator stays |G|. Windows without scored gaps are
+                   skipped in the macro average. This is the paper's
+                   Gap-Resolution Completeness. The same score without the
+                   d_g factor, sum_g s_g / |G|, is also written to the output
+                   for reference.)
+    Window Completeness
+                 = sum_u t_u / |U|     over salient utterances U
     Conciseness  = |L_gap U L_win| / |S|
                    (S: summary sentences; L_gap: sentences cited by a fully
-                   covered MKF gap with d_g = 1, i.e. MR-gated; L_win: sentences
-                   cited by a covered salient utterance)
+                   resolved gap with d_g = 1; L_win: sentences cited by a
+                   covered salient utterance)
 
 Each metric is reported both micro (sum of numerators / sum of denominators) and
 macro (mean of the per-window ratios over windows that have items). The paper's

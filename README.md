@@ -7,7 +7,6 @@ Don't Scroll Back: Missing-Evidence Memory for Streaming Dialogue Summarization
 </h3>
 
 <div align="center">
-  <p>Authors: Hyangsuk Min and Hwanjun Song</p>
   <a href="https://arxiv.org/abs/2608.09043">
   <img src="https://img.shields.io/badge/arXiv-b31b1b?style=flat-square" alt="arXiv">
   </a>
@@ -56,8 +55,9 @@ python evaluation/evaluate.py \
   --provider openai --base-url https://your-endpoint/v1 --api-key-env MY_JUDGE_KEY
 ```
 
-This reports MR, MKF, WKF, factuality, conciseness, and MR-gated MKF (the
-paper's Gap-Comp). The metric definitions are in the docstring at the top of
+This reports Memory Recall, Gap-Resolution Completeness, Window
+Completeness, Faithfulness, and Conciseness. The metric definitions are in the
+docstring at the top of
 `evaluation/evaluate.py`.
 To judge locally instead, install vLLM (`python -m pip install vllm`, not in
 `requirements.txt` because it is environment-specific) and pass
