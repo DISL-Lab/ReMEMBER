@@ -62,3 +62,52 @@ paper's Gap-Comp). The metric definitions are in the docstring at the top of
 To judge locally instead, install vLLM (`python -m pip install vllm`, not in
 `requirements.txt` because it is environment-specific) and pass
 `--provider vllm --gpu-devices 0,1`.
+
+## Dataset Citations
+
+The benchmark windows are built from the following three source datasets.
+If you use this benchmark, please also cite them.
+
+**EverMemBench** (`E_`)
+
+```bibtex
+@misc{hu2026evermembench,
+  title         = {Evaluating Long-Horizon Memory for Multi-Party Collaborative Dialogues},
+  author        = {Hu, Chuanrui and Li, Tong and Gao, Xingze and Chen, Hongda and Bai, Yi and Xu, Dannong and Lin, Tianwei and Li, Xiaohong and Han, Yunyun and Pei, Jian and Deng, Yafeng},
+  year          = {2026},
+  eprint        = {2602.01313},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2602.01313}
+}
+```
+
+**LoCoMo** (`L_`)
+
+```bibtex
+@inproceedings{maharana-etal-2024-evaluating,
+  title     = {Evaluating Very Long-Term Conversational Memory of {LLM} Agents},
+  author    = {Maharana, Adyasha and Lee, Dong-Ho and Tulyakov, Sergey and Bansal, Mohit and Barbieri, Francesco and Fang, Yuwei},
+  booktitle = {Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)},
+  month     = aug,
+  year      = {2024},
+  address   = {Bangkok, Thailand},
+  publisher = {Association for Computational Linguistics},
+  url       = {https://aclanthology.org/2024.acl-long.747},
+  doi       = {10.18653/v1/2024.acl-long.747},
+  pages     = {13851--13870}
+}
+```
+
+**RealTalk** (`R_`)
+
+```bibtex
+@misc{lee2025realtalk,
+  title         = {{REALTALK}: A 21-Day Real-World Dataset for Long-Term Conversation},
+  author        = {Lee, Dong-Ho and Maharana, Adyasha and Pujara, Jay and Ren, Xiang and Barbieri, Francesco},
+  year          = {2025},
+  eprint        = {2502.13270},
+  archivePrefix = {arXiv},
+  url           = {https://arxiv.org/abs/2502.13270}
+}
+```
+
